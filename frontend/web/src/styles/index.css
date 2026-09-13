@@ -1,0 +1,162 @@
+@import 'tailwindcss';
+
+/*
+ * Nimpass design tokens.
+ *
+ * Binding source: docs/03-DESIGN-SYSTEM.md
+ *   §16 Base Theme      — light, warm off-white page / white surfaces
+ *   §18 Accent Color    — one restrained accent, used sparingly
+ *   §19 Semantic Colors — standard, never colour alone
+ *   §23 Typography      — display → micro scale
+ *   §27 Border Radius   — 8 / 12 / 16 / 20-24 / pill
+ *   §28 Shadows         — soft, wide, low opacity
+ *   §97 Design Tokens   — centralised here, never scattered in components
+ *
+ * There is intentionally no dark theme: §17 makes the light theme the
+ * source-of-truth visual identity for the competition MVP.
+ */
+@theme {
+  /* ---- Surfaces & text ------------------------------------------------ */
+  --color-canvas: #faf9f7;
+  --color-canvas-sunken: #f4f2ee;
+  --color-surface: #ffffff;
+  --color-surface-muted: #f7f6f3;
+  --color-surface-inset: #f1efeb;
+
+  --color-ink: #1a1917;
+  --color-ink-muted: #5f5b54;
+  --color-ink-subtle: #8b867d;
+  --color-ink-inverse: #fbfaf8;
+
+  --color-line: #e7e4dd;
+  --color-line-strong: #d8d4cb;
+
+  /* ---- Accent ---------------------------------------------------------
+   * A deep, desaturated teal. Reads premium on warm neutrals, holds
+   * AA contrast on white, and is deliberately nothing like the neon
+   * palettes §20 rules out.
+   */
+  --color-accent: #0f6b5f;
+  --color-accent-hover: #0c574d;
+  --color-accent-soft: #e6f1ef;
+  --color-accent-border: #bcd9d4;
+
+  /* ---- Semantic ------------------------------------------------------- */
+  --color-success: #1f7a4d;
+  --color-success-soft: #e7f3ec;
+  --color-warning: #9a6412;
+  --color-warning-soft: #fbf1df;
+  --color-danger: #a33228;
+  --color-danger-soft: #fbeceb;
+  --color-info: #33557a;
+  --color-info-soft: #edf2f8;
+
+  /* ---- Typography ----------------------------------------------------- */
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+    Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-display: 'Plus Jakarta Sans', 'Inter', ui-sans-serif, system-ui,
+    -apple-system, 'Segoe UI', Roboto, sans-serif;
+
+  --text-micro: 0.75rem;
+  --text-micro--line-height: 1.1rem;
+  --text-small: 0.8125rem;
+  --text-small--line-height: 1.25rem;
+  --text-body: 0.9375rem;
+  --text-body--line-height: 1.6rem;
+  --text-body-lg: 1.0625rem;
+  --text-body-lg--line-height: 1.75rem;
+  --text-lead: 1.1875rem;
+  --text-lead--line-height: 1.9rem;
+  --text-h3: 1.375rem;
+  --text-h3--line-height: 1.85rem;
+  --text-h2: 1.75rem;
+  --text-h2--line-height: 2.2rem;
+  --text-h1: 2.25rem;
+  --text-h1--line-height: 2.6rem;
+  --text-display: 3rem;
+  --text-display--line-height: 3.25rem;
+
+  /* ---- Radius (§27) --------------------------------------------------- */
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.25rem;
+  --radius-2xl: 1.5rem;
+
+  /* ---- Shadows (§28) — soft, wide, low opacity ------------------------ */
+  --shadow-soft: 0 1px 2px rgb(26 25 23 / 0.04), 0 1px 3px rgb(26 25 23 / 0.03);
+  --shadow-lift: 0 2px 4px rgb(26 25 23 / 0.04), 0 12px 28px -12px rgb(26 25 23 / 0.12);
+  --shadow-raised: 0 4px 10px rgb(26 25 23 / 0.05), 0 24px 48px -24px rgb(26 25 23 / 0.18);
+
+  /* ---- Containers (§11) ----------------------------------------------- */
+  --container-reading: 46rem; /* 736px — detail / reading content */
+  --container-content: 72rem; /* 1152px — general content */
+  --container-wide: 84rem; /* 1344px — dense operational surfaces */
+
+  /* ---- Motion (§86) --------------------------------------------------- */
+  --nimpass-duration-fast: 120ms;
+  --nimpass-duration-base: 180ms;
+  --nimpass-duration-slow: 260ms;
+  --nimpass-ease: cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+@layer base {
+  *,
+  ::after,
+  ::before {
+    border-color: var(--color-line);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    line-height: var(--text-body--line-height);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: -0.018em;
+    text-wrap: balance;
+  }
+
+  /* §88 Focus States — always visible, accent-coloured, never removed. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  ::selection {
+    background-color: var(--color-accent-soft);
+    color: var(--color-ink);
+  }
+
+  /* §85/§86 Animation — respect the user's motion preference. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@utility text-balance {
+  text-wrap: balance;
+}

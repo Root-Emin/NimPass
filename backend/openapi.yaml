@@ -1,0 +1,567 @@
+openapi: 3.0.3
+info:
+  title: Nimpass REST API
+  version: 1.0.0
+  license: { name: MIT, url: 'https://spdx.org/licenses/MIT.html' }
+  description: |
+    All money values are integer Luna. Login and payout proofs must be produced
+    by Nimiq Pay's sign(message), using the exact server-provided challenge message.
+    Payout completion requires signatures by both the new payout wallet and the
+    authenticated owner wallet over that same challenge message.
+    Unsafe methods require an exact configured Origin (or Referer fallback).
+    Authenticated unsafe methods additionally require X-CSRF-Token, obtained
+    from login or GET /auth/session. Cookies are HttpOnly, SameSite=Lax; HTTPS
+    deployments use Secure __Host-nimpass_session, local HTTP development uses
+    nimpass_session. Requests must send credentials: include.
+    Purchase payment requests are server-authored. Map paymentRequest.valueLuna
+    to the Mini App SDK's sendBasicTransactionWithData({value}) parameter;
+    pass paymentRequest.data unchanged. A returned wallet txHash is not payment
+    success. Only a server-verified, main-chain included, macro-finalized payment
+    atomically creates a Pass. Mini App sign() preprocessing still requires a
+    captured live Nimiq Pay fixture before production authentication readiness.
+    Settlement after the 30-minute intent expiry is accepted only within five
+    minutes and only if the backend observed the matching transaction in the
+    Nimiq mempool before expiry. Hash submission alone is not broadcast proof.
+servers:
+  - url: /api/v1
+security:
+  - sessionCookie: []
+paths:
+  /auth/challenges:
+    post:
+      summary: Create wallet login challenge
+      operationId: createLoginChallenge
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChallengeInput' }
+      responses:
+        '201': { description: Challenge created, content: { application/json: { schema: { $ref: '#/components/schemas/Challenge' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+  /auth/sessions:
+    post:
+      summary: Verify wallet signature and create session
+      operationId: completeLogin
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Proof' }
+      responses:
+        '201': { description: Authenticated; sets session cookie, content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '410': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+  /auth/session:
+    get:
+      summary: Get current session
+      operationId: currentSession
+      responses:
+        '200': { description: Current identity and CSRF token, content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+    delete:
+      summary: Revoke current session
+      operationId: logout
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      responses:
+        '204': { description: Session revoked; clears cookie }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /providers:
+    get:
+      summary: List own providers
+      operationId: listOwnProviders
+      responses:
+        '200': { description: Own providers, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Provider' } } } } } } }
+        '401': { $ref: '#/components/responses/Error' }
+    post:
+      summary: Create provider profile
+      operationId: createProvider
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ProviderInput' } } }
+      responses:
+        '201': { description: Created provider, content: { application/json: { schema: { $ref: '#/components/schemas/Provider' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /providers/{providerID}:
+    parameters: [ { $ref: '#/components/parameters/ProviderID' } ]
+    get:
+      summary: Get own provider
+      operationId: getOwnProvider
+      responses:
+        '200': { description: Own provider, content: { application/json: { schema: { $ref: '#/components/schemas/Provider' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+    patch:
+      summary: Update provider profile
+      operationId: updateProvider
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ProviderInput' } } }
+      responses:
+        '200': { description: Updated profile; payout fields cannot be mass-assigned, content: { application/json: { schema: { $ref: '#/components/schemas/Provider' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /providers/{providerID}/payout-challenges:
+    parameters: [ { $ref: '#/components/parameters/ProviderID' } ]
+    post:
+      summary: Create payout wallet challenge
+      operationId: createPayoutChallenge
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ChallengeInput' } } }
+      responses:
+        '201': { description: Purpose VERIFY_PROVIDER_WALLET challenge, content: { application/json: { schema: { $ref: '#/components/schemas/Challenge' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+  /providers/{providerID}/payout-verifications:
+    parameters: [ { $ref: '#/components/parameters/ProviderID' } ]
+    post:
+      summary: Verify payout wallet and owner step-up
+      operationId: verifyPayout
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/PayoutProof' } } }
+      responses:
+        '200': { description: Verified provider payout wallet, content: { application/json: { schema: { $ref: '#/components/schemas/Provider' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '410': { $ref: '#/components/responses/Error' }
+  /providers/{providerID}/services:
+    parameters: [ { $ref: '#/components/parameters/ProviderID' } ]
+    get:
+      summary: List own services
+      operationId: listOwnServices
+      responses:
+        '200': { description: Services, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Service' } } } } } } }
+        '404': { $ref: '#/components/responses/Error' }
+    post:
+      summary: Create service
+      operationId: createService
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ServiceInput' } } }
+      responses:
+        '201': { description: Draft service, content: { application/json: { schema: { $ref: '#/components/schemas/Service' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /services/{serviceID}:
+    parameters: [ { $ref: '#/components/parameters/ServiceID' } ]
+    get:
+      summary: Get own service
+      operationId: getOwnService
+      responses:
+        '200': { description: Service, content: { application/json: { schema: { $ref: '#/components/schemas/Service' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+    patch:
+      summary: Update service
+      operationId: updateService
+      description: Full replacement of editable fields; status transitions DRAFT→ACTIVE/ARCHIVED, ACTIVE→ARCHIVED, ARCHIVED terminal.
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ServiceUpdate' } } }
+      responses:
+        '200': { description: Updated service, content: { application/json: { schema: { $ref: '#/components/schemas/Service' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /providers/{providerID}/services/{serviceID}/packages:
+    parameters: [ { $ref: '#/components/parameters/ProviderID' }, { $ref: '#/components/parameters/ServiceID' } ]
+    post:
+      summary: Create package under own service
+      operationId: createPackage
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/PackageInput' } } }
+      responses:
+        '201': { description: Draft package, content: { application/json: { schema: { $ref: '#/components/schemas/Package' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /providers/{providerID}/packages:
+    parameters: [ { $ref: '#/components/parameters/ProviderID' } ]
+    get:
+      summary: List own packages
+      operationId: listOwnPackages
+      responses:
+        '200': { description: Own packages, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Package' } } } } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /packages/{packageID}:
+    parameters: [ { $ref: '#/components/parameters/PackageID' } ]
+    get:
+      summary: Get own package
+      operationId: getOwnPackage
+      responses:
+        '200': { description: Own package, content: { application/json: { schema: { $ref: '#/components/schemas/Package' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+    patch:
+      summary: Update draft package
+      operationId: updatePackage
+      description: Full replacement of draft/unavailable editable fields; published packages are immutable.
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/PackageInput' } } }
+      responses:
+        '200': { description: Updated package, content: { application/json: { schema: { $ref: '#/components/schemas/Package' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /packages/{packageID}/publish:
+    parameters: [ { $ref: '#/components/parameters/PackageID' } ]
+    post:
+      summary: Publish package
+      operationId: publishPackage
+      description: Requires an active service, valid package, and verified provider payout wallet.
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      responses:
+        '200': { description: Published package, content: { application/json: { schema: { $ref: '#/components/schemas/Package' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /public/packages:
+    get:
+      summary: Discover published packages
+      operationId: listPublicPackages
+      security: []
+      responses:
+        '200': { description: 'Published, unexpired packages only', content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/PublicOffer' } } } } } } }
+        '400': { $ref: '#/components/responses/Error' }
+  /public/packages/{packageID}:
+    parameters: [ { $ref: '#/components/parameters/PackageID' } ]
+    get:
+      summary: Get published package
+      operationId: getPublicPackage
+      security: []
+      responses:
+        '200': { description: Published offer, content: { application/json: { schema: { $ref: '#/components/schemas/PublicOffer' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /public/providers/{providerID}:
+    parameters: [ { $ref: '#/components/parameters/ProviderID' } ]
+    get:
+      summary: Get public provider
+      operationId: getPublicProvider
+      security: []
+      responses:
+        '200': { description: Public verified provider, content: { application/json: { schema: { $ref: '#/components/schemas/PublicProvider' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /purchases:
+    post:
+      summary: Create or recover a published-package purchase intent
+      operationId: createPurchase
+      description: Authenticated wallet is the only customer identity. Reuses an active unpaid intent for this wallet/package even after the fixed-package cutoff. New fixed-expiration intents are rejected at or after package.expires_at minus 35 minutes (30-minute TTL plus five-minute settlement grace) with HTTP 409 PACKAGE_PURCHASE_CUTOFF. The package expiration and existing intent snapshot are not changed. The optional idempotency key is bound to this customer; reuse with a different package conflicts.
+      parameters: [ { $ref: '#/components/parameters/Csrf' }, { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CreatePurchase' } } }
+      responses:
+        '201': { description: New purchase intent, content: { application/json: { schema: { $ref: '#/components/schemas/Purchase' } } } }
+        '200': { description: Existing recoverable intent, content: { application/json: { schema: { $ref: '#/components/schemas/Purchase' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+    get:
+      summary: Recover own purchase intents and payment states
+      operationId: listPurchases
+      responses:
+        '200': { description: Up to 100 newest own purchases, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Purchase' } } } } } } }
+        '401': { $ref: '#/components/responses/Error' }
+  /purchases/{purchaseID}:
+    parameters: [ { $ref: '#/components/parameters/PurchaseID' } ]
+    get:
+      summary: Get own purchase intent and authoritative payment state
+      operationId: getPurchase
+      responses:
+        '200': { description: Own purchase, content: { application/json: { schema: { $ref: '#/components/schemas/Purchase' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /purchases/{purchaseID}/transactions:
+    parameters: [ { $ref: '#/components/parameters/PurchaseID' } ]
+    post:
+      summary: Submit only the Nimiq Pay-returned transaction hash
+      operationId: submitTransaction
+      description: Does not claim global hash ownership or create a Pass. Idempotent for the same hash; a different candidate conflicts. Call reconcile to start/continue server-side verification.
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/TransactionSubmission' } } }
+      responses:
+        '202': { description: 'Candidate accepted, not verified', content: { application/json: { schema: { $ref: '#/components/schemas/Purchase' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '410': { $ref: '#/components/responses/Error' }
+  /purchases/{purchaseID}/reconcile:
+    parameters: [ { $ref: '#/components/parameters/PurchaseID' } ]
+    post:
+      summary: Recheck candidate transaction and macro-block finality
+      operationId: reconcilePurchase
+      description: Safe to retry; not-found and RPC outages remain uncertain and never authorize a second payment. Finalized evidence creates exactly one Pass in an atomic database transaction when the snapshotted package is still usable. If fixed expiry has passed, the verified receipt and COMPENSATION_REQUIRED case are committed instead, with no Pass and no second payment request.
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      responses:
+        '200': { description: Current authoritative payment/pass state, content: { application/json: { schema: { $ref: '#/components/schemas/Purchase' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /purchases/{purchaseID}/cancel:
+    parameters: [ { $ref: '#/components/parameters/PurchaseID' } ]
+    post:
+      summary: Cancel only an unpaid, unsubmitted intent
+      operationId: cancelPurchase
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      responses:
+        '200': { description: Cancelled intent, content: { application/json: { schema: { $ref: '#/components/schemas/Purchase' } } } }
+        '409': { $ref: '#/components/responses/Error' }
+  /passes/{passID}:
+    parameters: [ { $ref: '#/components/parameters/PassID' } ]
+    get:
+      summary: Get own paid Pass; no redemption in Mission 03
+      operationId: getPass
+      responses:
+        '200': { description: Own Pass, content: { application/json: { schema: { $ref: '#/components/schemas/Pass' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-nimpass_session
+      description: HTTPS production cookie; local HTTP development uses nimpass_session.
+  parameters:
+    Csrf: { in: header, name: X-CSRF-Token, required: true, schema: { type: string, pattern: '^[0-9a-f]{64}$' } }
+    ProviderID: { in: path, name: providerID, required: true, schema: { type: string, format: uuid } }
+    ServiceID: { in: path, name: serviceID, required: true, schema: { type: string, format: uuid } }
+    PackageID: { in: path, name: packageID, required: true, schema: { type: string, format: uuid } }
+    PurchaseID: { in: path, name: purchaseID, required: true, schema: { type: string, format: uuid } }
+    PassID: { in: path, name: passID, required: true, schema: { type: string, format: uuid } }
+    IdempotencyKey: { in: header, name: Idempotency-Key, required: false, schema: { type: string, minLength: 1, maxLength: 128 } }
+  responses:
+    Error:
+      description: Normalized error; codes include AUTH_REQUIRED, INVALID_SIGNATURE, CHALLENGE_EXPIRED, CHALLENGE_CONSUMED, FORBIDDEN, VALIDATION_ERROR, NOT_FOUND, CONFLICT, PAYMENT_CONFLICT, PACKAGE_PURCHASE_CUTOFF, INTENT_EXPIRED, RATE_LIMITED, CSRF_INVALID, ORIGIN_FORBIDDEN.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  schemas:
+    CreatePurchase:
+      type: object
+      additionalProperties: false
+      required: [packageId]
+      properties:
+        packageId: { type: string, format: uuid }
+    TransactionSubmission:
+      type: object
+      additionalProperties: false
+      required: [txHash]
+      properties:
+        txHash: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
+    PaymentRequest:
+      type: object
+      required: [recipient, valueLuna, data, network, expiresAt]
+      properties:
+        recipient: { type: string, description: Verified payout wallet snapshotted when intent was created. }
+        valueLuna: { type: integer, format: int64, minimum: 1, description: Exact integer business amount; SDK uses this as the value field. Network fee is separate. }
+        data: { type: string, pattern: '^NP1:[0-9a-f]{32}$', description: Exact UTF-8 transaction data; do not regenerate. }
+        network: { type: string, enum: [TESTNET, MAINNET] }
+        expiresAt: { type: string, format: date-time }
+    Compensation:
+      type: object
+      description: Finalized payment was received, but the fixed package expiration prevented Pass activation. Never request another payment. Manual provider/customer refund or reissue is required; no backend wallet custody or automatic refund exists.
+      required: [status, reason, createdAt, message, doNotPayAgain, automatedRefund]
+      properties:
+        status: { type: string, enum: [OPEN, RESOLVED] }
+        reason: { type: string, enum: [PACKAGE_EXPIRED_BEFORE_ACTIVATION] }
+        createdAt: { type: string, format: date-time }
+        message: { type: string }
+        doNotPayAgain: { type: boolean, enum: [true] }
+        automatedRefund: { type: boolean, enum: [false] }
+    Purchase:
+      type: object
+      required: [purchaseIntentId, status, purchaseStatus, packageId, packageTitle, serviceId, providerId, sessions, priceLuna, customerWallet, createdAt, expiresAt, transactionHash, broadcastObservedAt, paymentVerification, failureCategory, passId, paymentRequest, compensation]
+      properties:
+        purchaseIntentId: { type: string, format: uuid }
+        status: { type: string, enum: [awaiting_payment, transaction_submitted, verifying, awaiting_finality, uncertain_retryable, confirmed, pass_provisioning, completed, compensation_required, cancelled, expired, permanently_failed] }
+        purchaseStatus: { type: string, enum: [CREATED, PAYMENT_PENDING, TRANSACTION_SUBMITTED, VERIFYING, AWAITING_FINALITY, CONFIRMED, COMPENSATION_REQUIRED, FAILED, CANCELLED, EXPIRED] }
+        packageId: { type: string, format: uuid }
+        packageTitle: { type: string }
+        serviceId: { type: string, format: uuid }
+        providerId: { type: string, format: uuid }
+        sessions: { type: integer, format: int32 }
+        priceLuna: { type: integer, format: int64 }
+        customerWallet: { type: string }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        transactionHash: { type: string, nullable: true }
+        broadcastObservedAt: { type: string, format: date-time, nullable: true, description: Set only when backend saw the transaction in the Nimiq mempool before expiry. }
+        paymentVerification: { type: string, nullable: true, enum: [SUBMITTED, NOT_FOUND, UNCERTAIN, INCLUDED, AWAITING_FINALITY, MISMATCH, COMPENSATION_REQUIRED] }
+        failureCategory: { type: string, nullable: true }
+        passId: { type: string, format: uuid, nullable: true }
+        paymentRequest: { type: object, allOf: [ { $ref: '#/components/schemas/PaymentRequest' } ], nullable: true }
+        compensation: { type: object, allOf: [ { $ref: '#/components/schemas/Compensation' } ], nullable: true }
+    Pass:
+      type: object
+      required: [id, purchaseId, ownerWallet, packageId, packageTitle, serviceId, providerId, originalSessions, usedSessions, remainingSessions, status, createdAt, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        purchaseId: { type: string, format: uuid }
+        ownerWallet: { type: string }
+        packageId: { type: string, format: uuid }
+        packageTitle: { type: string }
+        serviceId: { type: string, format: uuid }
+        providerId: { type: string, format: uuid }
+        originalSessions: { type: integer, format: int32 }
+        usedSessions: { type: integer, format: int32 }
+        remainingSessions: { type: integer, format: int32 }
+        status: { type: string, enum: [ACTIVE, COMPLETED, EXPIRED, CANCELLED] }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time, nullable: true }
+    ChallengeInput:
+      type: object
+      additionalProperties: false
+      required: [wallet]
+      properties: { wallet: { type: string, description: Nimiq NQ address; spaces accepted } }
+    Challenge:
+      type: object
+      required: [id, purpose, wallet, message, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        purpose: { type: string, enum: [AUTH_LOGIN, VERIFY_PROVIDER_WALLET] }
+        wallet: { type: string }
+        message: { type: string, description: Sign this exact UTF-8 string; do not reconstruct it. }
+        expiresAt: { type: string, format: date-time }
+    Proof:
+      type: object
+      additionalProperties: false
+      required: [challengeId, wallet, publicKey, signature]
+      properties:
+        challengeId: { type: string, format: uuid }
+        wallet: { type: string }
+        publicKey: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
+        signature: { type: string, pattern: '^[0-9a-fA-F]{128}$' }
+    PayoutProof:
+      type: object
+      additionalProperties: false
+      required: [challengeId, wallet, publicKey, signature, ownerPublicKey, ownerSignature]
+      properties:
+        challengeId: { type: string, format: uuid }
+        wallet: { type: string }
+        publicKey: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
+        signature: { type: string, pattern: '^[0-9a-fA-F]{128}$' }
+        ownerPublicKey: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
+        ownerSignature: { type: string, pattern: '^[0-9a-fA-F]{128}$' }
+    Identity:
+      type: object
+      required: [id, wallet, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        wallet: { type: string }
+        createdAt: { type: string, format: date-time }
+    Session:
+      type: object
+      required: [identity, expiresAt, csrfToken]
+      properties:
+        identity: { $ref: '#/components/schemas/Identity' }
+        expiresAt: { type: string, format: date-time }
+        csrfToken: { type: string, pattern: '^[0-9a-f]{64}$' }
+    ProviderInput:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties: { name: { type: string, minLength: 1, maxLength: 160 } }
+    Provider:
+      type: object
+      required: [id, name, payoutWallet, payoutVerifiedAt, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        payoutWallet: { type: string, nullable: true }
+        payoutVerifiedAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ServiceInput:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 160 }
+        description: { type: string, maxLength: 2000 }
+    ServiceUpdate:
+      type: object
+      additionalProperties: false
+      required: [name, status]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 160 }
+        description: { type: string, maxLength: 2000 }
+        status: { type: string, enum: [DRAFT, ACTIVE, ARCHIVED] }
+    Service:
+      type: object
+      required: [id, providerId, name, description, status, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        providerId: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        status: { type: string, enum: [DRAFT, ACTIVE, ARCHIVED] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    PackageInput:
+      type: object
+      additionalProperties: false
+      required: [title, sessions, priceLuna]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 160 }
+        description: { type: string, maxLength: 2000 }
+        sessions: { type: integer, format: int32, minimum: 1 }
+        priceLuna: { type: integer, format: int64, minimum: 1, description: Integer Luna only; floating-point NIM forbidden. }
+        expirationAt: { type: string, format: date-time, nullable: true, description: Optional fixed UTC expiration instant. }
+    Package:
+      type: object
+      required: [id, providerId, serviceId, title, description, sessions, priceLuna, currency, expirationAt, status, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        providerId: { type: string, format: uuid }
+        serviceId: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string }
+        sessions: { type: integer, format: int32 }
+        priceLuna: { type: integer, format: int64 }
+        currency: { type: string, enum: [NIM] }
+        expirationAt: { type: string, format: date-time, nullable: true }
+        status: { type: string, enum: [DRAFT, ACTIVE, UNAVAILABLE, ARCHIVED] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    PublicProvider:
+      type: object
+      required: [id, name]
+      properties: { id: { type: string, format: uuid }, name: { type: string } }
+    PublicService:
+      type: object
+      required: [id, name, description]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+    PublicOffer:
+      type: object
+      required: [package, provider, service]
+      properties:
+        package: { $ref: '#/components/schemas/Package' }
+        provider: { $ref: '#/components/schemas/PublicProvider' }
+        service: { $ref: '#/components/schemas/PublicService' }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, requestId]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            requestId: { type: string }
