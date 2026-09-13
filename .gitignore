@@ -106,8 +106,13 @@ desktop.ini
 .vscode/*
 !.vscode/extensions.json
 
-# --- Local agent/tooling state (machine-specific, not project contract) -----
-# .claude/skills is a tracked symlink pinned by skills-lock.json; only local
-# settings are ignored.
-.claude/settings.local.json
-.claude/*.local.json
+# --- AI agent tooling (local developer setup, not part of the deliverable) --
+# Kept out of the public competition repository by choice. Using AI tools is
+# explicitly allowed with no disclosure requirement (docs/06-COMPETITION.md
+# §24), so nothing here is required for submission. docs/ remains the
+# implementation contract and stays tracked.
+.agents/
+.claude/
+AGENTS.md
+CLAUDE.md
+skills-lock.json
