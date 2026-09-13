@@ -1,0 +1,113 @@
+# Nimpass root ignore rules.
+#
+# The repository is public (docs/09-SECURITY.md §28), so anything committed
+# here must be assumed readable by an attacker. These rules implement §29
+# (secrets never committed) and §30 (the .env rule) repository-wide; the
+# backend/ and frontend/web/ ignore files only cover their own subtrees and
+# their /.env anchors do not reach nested directories.
+
+# --- Secrets: environment files, at any depth -------------------------------
+.env
+.env.*
+*.env
+!.env.example
+!*.env.example
+!.env.sample
+
+# --- Secrets: key and certificate material ----------------------------------
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.asc
+*.gpg
+*.kdbx
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+*.ppk
+secrets/
+.secrets/
+*.secrets.json
+service-account*.json
+gha-creds-*.json
+
+# --- Wallet material: must never exist in this repo at all ------------------
+# Nimpass never receives or stores private wallet keys (docs/09-SECURITY.md
+# §205). These patterns are a backstop against an accidental local file, not
+# a licence to keep one.
+*.seed
+*.mnemonic
+wallet.json
+keystore/
+*.nimiq-key
+
+# --- Database dumps and local data ------------------------------------------
+# Migrations under backend/migrations/*.sql stay tracked; only dumps/backups
+# are ignored, so *.sql is deliberately NOT listed here.
+*.dump
+*.sql.gz
+*.sql.bz2
+*.sql.zst
+dump.sql
+*-dump.sql
+*_dump.sql
+*.bak
+*.backup
+*.sqlite
+*.sqlite3
+*.db
+/dumps/
+/backups/
+
+# --- Dependencies and build output ------------------------------------------
+node_modules/
+dist/
+dist-ssr/
+build/
+.vite/
+.turbo/
+*.local
+
+# --- Go build and test artifacts --------------------------------------------
+/bin/
+*.test
+*.out
+coverage/
+coverage.*
+!coverage.config.*
+
+# --- Logs --------------------------------------------------------------------
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- OS and editor noise -----------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+.idea/
+*.swp
+*.swo
+*.sw?
+.vscode/*
+!.vscode/extensions.json
+
+# --- Local agent/tooling state (machine-specific, not project contract) -----
+# .claude/skills is a tracked symlink pinned by skills-lock.json; only local
+# settings are ignored.
+.claude/settings.local.json
+.claude/*.local.json
