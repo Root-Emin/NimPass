@@ -12,6 +12,7 @@ import { ErrorState } from '@/components/ui/states'
 import { usePublicPackage } from '@/hooks/use-catalog'
 import { useInView } from '@/hooks/use-in-view'
 import { usePurchaseFlow, type PurchaseFlow } from '@/hooks/use-purchase-flow'
+import { mayStartPayment, mustWarnAgainstSecondPayment } from '@/types/payment'
 import { useWallet } from '@/hooks/use-wallet'
 import { formatDate, formatNim, formatSessions, initialsOf, perSessionLuna } from '@/lib/format'
 import type { PackageListing } from '@/types/domain'
@@ -52,7 +53,21 @@ function PackageDetail({ item }: { item: PackageListing }) {
 
   const walletReady = wallet.capabilities.walletOperationsAvailable
   const unavailable = item.status !== 'ACTIVE'
-  const showStickyBar = !panelInView && flow.state.kind !== 'COMPLETE'
+
+  /*
+   * The sticky bar carries a Buy button and a price, so it only earns its place
+   * while one of those is still useful: a payment that can be started, or one
+   * that is visibly in progress.
+   *
+   * Outside those, the button would render disabled and unexplained — and the
+   * explanation lives in the panel the customer has just scrolled past. A dead
+   * grey "Buy with NIM" pinned to the bottom of a phone screen, with a
+   * compensation notice hidden above it, is exactly the reading that makes
+   * someone pay again somewhere else (§46).
+   */
+  const showStickyBar = !panelInView && (mayStartPayment(flow.state) || flow.busy)
+
+  useScrollToPaymentOutcome(panelRef, flow, panelInView)
 
   return (
     <>
@@ -178,6 +193,42 @@ function PackageDetail({ item }: { item: PackageListing }) {
       </div>
     </>
   )
+}
+
+/**
+ * Brings the purchase panel back on screen when the payment reaches an outcome
+ * the customer has to read.
+ *
+ * On a phone the panel is a long way up the page by the time a payment settles,
+ * and the states that matter most — a verified payment with no pass, a hash the
+ * backend refused — are precisely the ones where saying nothing is dangerous.
+ * The announcement already reaches a screen reader through the live region;
+ * this is the same courtesy for everyone else.
+ *
+ * Scrolling rather than focusing is deliberate: the notice is not a control,
+ * and pulling focus out of the page would be a worse interruption than the one
+ * it solves.
+ */
+function useScrollToPaymentOutcome(
+  panelRef: React.RefObject<HTMLElement | null>,
+  flow: PurchaseFlow,
+  panelInView: boolean,
+) {
+  const state = flow.state
+  // Only for the outcomes that end the attempt while money is involved.
+  const needsReading = mustWarnAgainstSecondPayment(state) && !mayStartPayment(state) && !flow.busy
+  const announced = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!needsReading) {
+      announced.current = null
+      return
+    }
+    if (announced.current === state.kind) return
+    announced.current = state.kind
+    if (panelInView) return
+    panelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [needsReading, state.kind, panelInView, panelRef])
 }
 
 /**

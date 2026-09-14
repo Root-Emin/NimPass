@@ -1,4 +1,5 @@
 import { ArrowLeft, QrCode } from 'lucide-react'
+import { useEffect } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
 import { PassStatusBadge } from '@/components/pass/pass-status-badge'
@@ -9,11 +10,12 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { ErrorState, LoadingState } from '@/components/ui/states'
+import { SessionHistory } from '@/components/pass/session-history'
 import { useSessionRedemption } from '@/hooks/use-redemption'
-import { usePass } from '@/hooks/use-passes'
+import { usePass, usePassRedemptions } from '@/hooks/use-passes'
 import { formatDate } from '@/lib/format'
 import type { Pass } from '@/types/domain'
-import { passIsRedeemable, redemptionBlockedReason } from '@/types/redemption'
+import { isRedemptionBusy, passIsRedeemable, redemptionBlockedReason } from '@/types/redemption'
 
 /**
  * The pass itself: what it is, how much is left, and how to use one session.
@@ -29,6 +31,7 @@ import { passIsRedeemable, redemptionBlockedReason } from '@/types/redemption'
 export function PassDetailPage() {
   const { id } = useParams<{ id: string }>()
   const pass = usePass(id)
+  const history = usePassRedemptions(id)
 
   if (pass.isPending) {
     return (
@@ -74,18 +77,23 @@ export function PassDetailPage() {
       <Card className="mt-8 p-5 sm:p-6">
         <SessionProgress pass={data} />
         <Separator className="my-5" />
-        <UseSessionAction pass={data} />
+        <UseSession pass={data} />
       </Card>
 
       {/*
-        No session history.
+        Real session history, from `GET /passes/{passID}/redemptions`.
 
-        `backend/openapi.yaml` has no history endpoint, and the Pass it returns
-        carries counts rather than events. Listing anything here would mean
-        inventing a timeline, so the page says what it knows — how many sessions
-        have been used — and nothing more. docs/01-PRODUCT.md §27 wants the full
-        history; it needs a backend source first.
+        Only consumed sessions appear, because only consumed sessions happened.
+        The counts above and the rows here are written by the same backend
+        transaction, so they cannot drift (docs/01-PRODUCT.md §27).
       */}
+      <section className="mt-10 border-t border-line pt-6">
+        <h2 className="text-h3 text-ink">Sessions used</h2>
+        <div className="mt-4">
+          <SessionHistory items={history.data} isPending={history.isPending} />
+        </div>
+      </section>
+
       <section className="mt-10 border-t border-line pt-6">
         <dl className="grid gap-4 sm:grid-cols-2">
           <div>
@@ -105,41 +113,59 @@ export function PassDetailPage() {
 }
 
 /**
- * "Use session" produces a short-lived challenge for the provider to validate.
+ * The redemption surface.
  *
- * It never decrements anything on its own: the remaining count on screen is
- * whatever the backend last reported (docs/08-ARCHITECTURE.md §49).
+ * The hook and the sheet live *here*, above the redeemable/not-redeemable
+ * branch, and that placement is load-bearing rather than tidy.
+ *
+ * When a provider confirms the last session, the pass becomes COMPLETED and
+ * `passIsRedeemable` flips to false. With the sheet mounted inside the
+ * redeemable branch, that unmounted the dialog at the exact moment it had
+ * something worth saying — the customer watched their final session confirm and
+ * then saw the screen silently close. Keeping the sheet outside the branch
+ * means the outcome survives the state change that caused it.
  */
-function UseSessionAction({ pass }: { pass: Pass }) {
+function UseSession({ pass }: { pass: Pass }) {
   const redemption = useSessionRedemption(pass)
 
-  if (!passIsRedeemable(pass)) {
-    return (
-      <div className="space-y-3">
-        <p className="text-body text-ink-muted">
-          {redemptionBlockedReason(pass) ?? 'This pass cannot be used right now.'}
-        </p>
-        {pass.status === 'COMPLETED' ? (
-          <Button asChild variant="secondary">
-            {/* Buy Again always goes to the live package, on today's terms
-                (docs/01-PRODUCT.md §19, §56). */}
-            <Link to={`/packages/${pass.packageId}`}>Buy again</Link>
-          </Button>
-        ) : null}
-      </div>
-    )
-  }
+  // Picks up an authorised challenge stranded by a reload. Read-only: it never
+  // rotates a reference the customer may still be showing elsewhere (§40).
+  const { recover } = redemption
+  useEffect(() => {
+    void recover()
+  }, [recover])
 
-  const busy = redemption.state.kind === 'REQUESTING'
+  const busy = isRedemptionBusy(redemption.state)
 
   return (
     <>
-      <Button block size="lg" loading={busy} onClick={() => void redemption.begin()}>
-        <QrCode aria-hidden="true" />
-        Use a session
-      </Button>
+      {passIsRedeemable(pass) ? (
+        <Button
+          block
+          size="lg"
+          loading={busy}
+          disabled={busy}
+          onClick={() => void redemption.begin()}
+        >
+          <QrCode aria-hidden="true" />
+          Use a session
+        </Button>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-body text-ink-muted">
+            {redemptionBlockedReason(pass) ?? 'This pass cannot be used right now.'}
+          </p>
+          {pass.status === 'COMPLETED' ? (
+            <Button asChild variant="secondary">
+              {/* Buy Again always goes to the live package, on today's terms
+                  (docs/01-PRODUCT.md §19, §56). */}
+              <Link to={`/packages/${pass.packageId}`}>Buy again</Link>
+            </Button>
+          ) : null}
+        </div>
+      )}
 
-      <RedemptionSheet redemption={redemption} />
+      <RedemptionSheet redemption={redemption} passId={pass.id} />
     </>
   )
 }

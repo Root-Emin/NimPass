@@ -117,6 +117,37 @@ const DOMAIN_ERROR_COPY: Record<string, string> = {
     "This payment doesn't match what we're expecting for this purchase. Don't send another one — open the purchase to see where it stands.",
   INTENT_EXPIRED:
     'This purchase expired before the payment arrived. If you already sent NIM, do not send it again — open the purchase and we will keep checking.',
+  /*
+   * The backend refuses a new purchase once a fixed-expiration package is too
+   * close to its end date to settle safely. Nobody has been charged, so this is
+   * not phrased as a payment problem — and it is not phrased as "try again"
+   * either, because the same request would be refused for the same reason.
+   */
+  PACKAGE_PURCHASE_CUTOFF:
+    "This package is too close to its end date to buy safely, so we didn't start a payment. Have a look at the other packages from this provider.",
+  /*
+   * Redemption codes (Mission 04.1).
+   *
+   * Two rules shape this copy. Nothing here may leak whether a reference
+   * exists, belongs to another provider, or was ever valid — a provider who can
+   * distinguish "not a code" from "someone else's code" can probe for live
+   * references (§31). And every one of these outcomes left the session
+   * *unused*, so none of them may read as though something was spent.
+   */
+  REDEMPTION_CHALLENGE_EXPIRED:
+    'This code has expired. Ask for a new one — no session was used.',
+  REDEMPTION_ALREADY_CONSUMED:
+    'This session has already been used. Nothing was used twice.',
+  REDEMPTION_NOT_AUTHORIZED:
+    "This code isn't ready yet. The customer needs to approve it in their wallet first.",
+  INVALID_REDEMPTION_SIGNATURE:
+    "We couldn't verify that approval, so no session was used. Try again.",
+  STALE_REDEMPTION_CHALLENGE:
+    'This code is out of date — the pass changed after it was made. Ask for a new one.',
+  // Deliberately uninformative: a code that never existed, one that belongs to
+  // another provider, and one that was withdrawn all read identically.
+  INVALID_REDEMPTION_TOKEN: "This code isn't valid or can't be used here.",
+
   VALIDATION_ERROR: "Some details weren't accepted. Check them and try again.",
   NOT_FOUND: "We couldn't find that.",
   INTERNAL_ERROR: 'Something went wrong on our side. Please try again.',

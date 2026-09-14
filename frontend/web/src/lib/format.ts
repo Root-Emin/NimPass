@@ -91,6 +91,17 @@ export function perSessionLuna(priceLuna: Luna, sessionCount: number): Luna | nu
  * Shortens a wallet address for the compact wallet control.
  * Full addresses are never shown unless the user asks (docs/03 §33, §92).
  */
+/**
+ * Compare-safe form of a Nimiq address.
+ *
+ * Addresses are displayed in spaced blocks and handed around unspaced, so two
+ * spellings of the same wallet are common. Comparing raw strings would report a
+ * wallet mismatch that does not exist.
+ */
+export function normaliseAddress(address: string): string {
+  return address.replace(/\s+/g, '').toUpperCase()
+}
+
 export function shortenAddress(address: string): string {
   const compact = address.replace(/\s+/g, '')
   if (compact.length <= 8) return compact
@@ -104,6 +115,26 @@ export function formatDate(iso: string): string {
     day: 'numeric',
     month: 'short',
     year: 'numeric',
+  }).format(date)
+}
+
+/**
+ * A redemption's moment, in the reader's own timezone.
+ *
+ * The backend stores and compares UTC; this is presentation only. A session
+ * used at 19:00 local should read as 19:00, not as the UTC instant behind it
+ * (docs/08-ARCHITECTURE.md §35 on server-authoritative comparison versus client
+ * presentation).
+ */
+export function formatDateTime(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return '—'
+  return new Intl.DateTimeFormat('en-US', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
   }).format(date)
 }
 

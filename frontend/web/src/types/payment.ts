@@ -1,4 +1,4 @@
-import type { Purchase } from './domain'
+import type { Compensation, Purchase } from './domain'
 import type { NimiqErrorKind } from './wallet'
 
 /**
@@ -36,6 +36,26 @@ export type PaymentState =
   | { kind: 'PASS_CREATING'; purchase: Purchase }
   /** Terminal success: pass exists. */
   | { kind: 'COMPLETE'; purchase: Purchase; passId: string }
+  /**
+   * Paid, verified, finalised — and no pass (§3 of this milestone).
+   *
+   * Not a failure and not an uncertainty: the backend knows exactly what
+   * happened. The money arrived, the package's fixed expiration passed before
+   * the pass could be activated, and a compensation case was opened. The
+   * customer holds a verified receipt, owes nothing further, and must not pay
+   * again. `compensation` carries the backend's own case record; it is nullable
+   * because the wire type is, not because its absence weakens any of the above.
+   */
+  | { kind: 'COMPENSATION_REQUIRED'; purchase: Purchase; compensation: Compensation | null }
+  /**
+   * The backend refused a *new* intent because the package is too close to its
+   * fixed expiration to settle safely (409 PACKAGE_PURCHASE_CUTOFF).
+   *
+   * Nothing was charged, so this is not a payment failure — but it is not
+   * retryable either, because the same call would be refused again. The cutoff
+   * is the backend's decision and is never recomputed here.
+   */
+  | { kind: 'PURCHASE_CUTOFF'; purchase: null }
   /** The user rejected the wallet dialog. A normal outcome, not an error (§57). */
   | { kind: 'CANCELLED'; purchase: Purchase | null }
   /** Terminal, definite failure. Safe to offer a retry. */
@@ -56,6 +76,15 @@ export type PaymentFailureReason =
   | 'WALLET_UNAVAILABLE'
   /** The backend rejected the transaction (wrong amount, recipient, reuse…). */
   | 'REJECTED_BY_BACKEND'
+  /**
+   * The backend refused to bind this hash to this purchase — the amount,
+   * recipient or reference did not match, or the transaction already belongs to
+   * another purchase (409 PAYMENT_CONFLICT; docs/09-SECURITY.md §96).
+   *
+   * A definite rejection of the *hash*, never evidence that the money stayed
+   * put. Retrying is unsafe, which is why it is in `UNSAFE_TO_RETRY`.
+   */
+  | 'PAYMENT_CONFLICT'
   /** The purchase intent expired before the transaction landed. */
   | 'INTENT_EXPIRED'
   /** Nimiq Pay rejected the transaction shape before broadcasting it. */
@@ -93,7 +122,11 @@ export function isTerminalPaymentState(state: PaymentState): boolean {
   return (
     state.kind === 'COMPLETE' ||
     state.kind === 'CANCELLED' ||
-    state.kind === 'FAILED'
+    state.kind === 'FAILED' ||
+    // Terminal for this purchase: the backend has finished deciding, and what
+    // happens next is a human compensation case, not another request.
+    state.kind === 'COMPENSATION_REQUIRED' ||
+    state.kind === 'PURCHASE_CUTOFF'
   )
 }
 
@@ -117,8 +150,20 @@ export function isSettlingPaymentState(state: PaymentState): boolean {
  * for a second payment once a transaction may exist.
  */
 export function mayRetryPayment(state: PaymentState): boolean {
-  return state.kind === 'CANCELLED' || state.kind === 'FAILED'
+  if (state.kind === 'CANCELLED') return true
+  if (state.kind === 'FAILED') return !UNSAFE_TO_RETRY.has(state.reason)
+  return false
 }
+
+/**
+ * Failure reasons where a retry would mean a *second* payment for a
+ * transaction that already exists, or a request the backend will refuse again.
+ *
+ * `PAYMENT_CONFLICT` is the dangerous one: it only ever arrives after the
+ * wallet has broadcast, so the money has very likely moved even though this
+ * purchase cannot accept the hash (docs/09-SECURITY.md §96).
+ */
+const UNSAFE_TO_RETRY: ReadonlySet<PaymentFailureReason> = new Set(['PAYMENT_CONFLICT'])
 
 /**
  * Whether the primary "Buy" control may start a payment from this state.
@@ -139,7 +184,50 @@ export function mayStartPayment(state: PaymentState): boolean {
 
 /** Whether the user has been charged, or might have been. */
 export function mayHaveBeenCharged(state: PaymentState): boolean {
-  return isSettlingPaymentState(state) || state.kind === 'UNCERTAIN' || state.kind === 'COMPLETE'
+  return (
+    isSettlingPaymentState(state) ||
+    state.kind === 'UNCERTAIN' ||
+    state.kind === 'COMPLETE' ||
+    // Not "might have been": in compensation the backend verified the payment
+    // on chain and finalised it. This one is certain.
+    state.kind === 'COMPENSATION_REQUIRED' ||
+    (state.kind === 'FAILED' && state.reason === 'PAYMENT_CONFLICT')
+  )
+}
+
+/**
+ * Whether the UI must actively tell the user *not* to send another payment.
+ *
+ * Stronger than "no retry button": these are the states where a well-meaning
+ * customer, seeing no pass, would reasonably try paying again.
+ */
+export function mustWarnAgainstSecondPayment(state: PaymentState): boolean {
+  return mayHaveBeenCharged(state) && state.kind !== 'COMPLETE'
+}
+
+/**
+ * The backend's own do-not-pay-again flag, read from where the contract puts
+ * it, with a safe default.
+ *
+ * A `compensation_required` purchase that arrives without its compensation
+ * object is still a verified payment. Defaulting to `true` means a missing
+ * field can only ever make the UI more cautious, never less.
+ */
+export function doNotPayAgain(state: PaymentState): boolean {
+  if (state.kind !== 'COMPENSATION_REQUIRED') return false
+  return state.compensation?.doNotPayAgain ?? true
+}
+
+/**
+ * Whether the backend has promised an automatic refund. It has not, ever.
+ *
+ * Read from the wire rather than hardcoded so a future contract change shows
+ * up here, but the copy that depends on it must never claim a refund is coming
+ * when this is false (§7 of this milestone).
+ */
+export function hasAutomatedRefund(state: PaymentState): boolean {
+  if (state.kind !== 'COMPENSATION_REQUIRED') return false
+  return state.compensation?.automatedRefund ?? false
 }
 
 /**
@@ -182,11 +270,27 @@ export function paymentStateFromPurchase(purchase: Purchase): PaymentState {
       return purchase.passId
         ? { kind: 'COMPLETE', purchase, passId: purchase.passId }
         : { kind: 'PASS_CREATING', purchase }
+    // Verified payment, no pass. Deliberately NOT folded into FAILED: the money
+    // arrived and the backend knows it, so telling this customer their payment
+    // failed would be both false and the fastest route to a second payment.
+    case 'compensation_required':
+      return { kind: 'COMPENSATION_REQUIRED', purchase, compensation: purchase.compensation }
     case 'cancelled':
       return { kind: 'CANCELLED', purchase }
     case 'expired':
       return { kind: 'FAILED', purchase, reason: 'INTENT_EXPIRED' }
     case 'permanently_failed':
       return { kind: 'FAILED', purchase, reason: 'REJECTED_BY_BACKEND' }
+    default:
+      // Unreachable while the union matches the contract — TypeScript proves
+      // the cases above are exhaustive. It exists for the wire: a backend that
+      // ships a new status this build has never heard of hands us a string no
+      // case matches, and returning `undefined` from here would render nothing
+      // at all beside a re-armed Buy button.
+      //
+      // UNCERTAIN is the only defensible answer. An unknown status is never
+      // silent success, never a failure, and never an invitation to pay again
+      // (§15 of this milestone).
+      return { kind: 'UNCERTAIN', purchase }
   }
 }

@@ -60,8 +60,9 @@ describe('purchase journey', () => {
   it('carries the intent through the wallet to a provisioned pass', async () => {
     sendBasicTransactionWithData.mockResolvedValue(TX_HASH)
 
-    // The backend walks its own state machine; the UI only reads it.
-    const statuses = ['verifying', 'completed'] as const
+    // The backend walks its own state machine; the UI only reads it. The full
+    // Mission 03 sequence, including the finality wait (§40).
+    const statuses = ['verifying', 'awaiting_finality', 'completed'] as const
     let polls = 0
 
     const { calls } = mockApi({
@@ -109,11 +110,40 @@ describe('purchase journey', () => {
     // real polling interval.
     expect(await screen.findByText('Confirming your payment…')).toBeInTheDocument()
 
-    expect(await screen.findByText('Payment successful', {}, { timeout: 6000 })).toBeInTheDocument()
+    // Awaiting finality is its own step, and reads as progress rather than
+    // doubt (§16).
+    expect(
+      await screen.findByText('Finalising your payment…', {}, { timeout: 6000 }),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
+
+    expect(await screen.findByText('Payment successful', {}, { timeout: 8000 })).toBeInTheDocument()
     const link = await screen.findByRole('link', { name: 'View pass' })
     expect(link).toHaveAttribute('href', `/passes/${PASS.id}`)
-    expect(polls).toBeGreaterThan(1)
-  }, 15_000)
+    expect(polls).toBeGreaterThan(2)
+  }, 20_000)
+
+  it('opens the provisioned pass on the terms it was sold under', async () => {
+    // §27: the pass carries the snapshot the purchase froze. The live package
+    // has since been retitled and repriced; the pass must not follow it.
+    const RENAMED = anOffer({
+      package: { ...PACKAGE, title: 'Completely different package now', priceLuna: 99_000_000 },
+    })
+
+    mockApi({
+      [`/api/v1/passes/${PASS.id}`]: () => ok(PASS),
+      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(RENAMED),
+    })
+
+    renderApp(`/passes/${PASS.id}`, { wallet: WALLET, session: SESSION })
+
+    // The title comes from the pass's own snapshot, not from the live package.
+    expect(
+      await screen.findByRole('heading', { name: PASS.packageTitle, level: 1 }),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Completely different package now')).not.toBeInTheDocument()
+    expect(screen.getByText(/of 10 sessions left/)).toBeInTheDocument()
+  })
 
   it('shows the pass from real backend state once it exists', async () => {
     mockApi({
@@ -222,9 +252,12 @@ describe('purchase journey', () => {
     await user.click((await screen.findAllByRole('button', { name: /Buy with NIM/i }))[0]!)
 
     expect(await screen.findByText('Checking your payment…')).toBeInTheDocument()
-    expect(screen.getByText(/Do not send another payment yet/)).toBeInTheDocument()
+    expect(screen.getByText(/We can't confirm the outcome yet/)).toBeInTheDocument()
+    expect(screen.getByText('Do not send another payment.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
     expect(screen.queryByText(/couldn't be completed/i)).not.toBeInTheDocument()
+    // "Check again" reconciles; it is the one safe action here (§20).
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument()
   })
 
   it('binds the intent to the signed-in wallet without claiming control of it', async () => {

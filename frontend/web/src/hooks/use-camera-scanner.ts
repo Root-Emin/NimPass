@@ -9,16 +9,21 @@ import { useCallback, useEffect, useRef, useState } from 'react'
  *     permission prompt on page load is exactly the confirmation fatigue
  *     docs/04-NIMIQ-MINI-APPS.md §55-§56 warns against, and a provider opening
  *     their workspace has not asked to scan anything.
- *  2. No new dependency. Decoding uses the platform `BarcodeDetector` where the
- *     runtime has it, and where it does not, scanning is simply reported as
- *     unsupported and the typed-code path carries the flow. Pulling in a
- *     WASM QR decoder to cover that gap would add weight to every provider
- *     bundle for a fallback that already exists
- *     (docs/08-ARCHITECTURE.md §122, docs/09-SECURITY.md §97).
+ *  2. Decoding is real on every runtime that has a camera. The platform
+ *     `BarcodeDetector` is used where it exists, because it is free and
+ *     hardware-accelerated — but it is Chromium-only. Safari and iOS WKWebView
+ *     do not implement it, and Nimiq Pay runs on iOS, so relying on it alone
+ *     meant a provider with an iPhone could not scan at all.
  *
- * Typing the code is a first-class path, not a consolation prize: Nimpass is
- * web-first, providers work on desktops, and redemption must not depend on a
- * phone camera (docs/01-PRODUCT.md §25, §40).
+ *     The fallback is `qr-scanner`, which Nimiq themselves maintain and ship in
+ *     the Nimiq wallet — same ecosystem, proven in exactly this WebView. It is
+ *     imported lazily, inside `start()`, so it costs nothing on any other route
+ *     and nothing at all on runtimes that have the native detector
+ *     (docs/08-ARCHITECTURE.md §122).
+ *
+ * Typing the code stays a first-class path regardless: Nimpass is web-first,
+ * providers work on desktops, and redemption must never depend on a camera
+ * (docs/01-PRODUCT.md §25, §40).
  */
 
 export type CameraStatus =
@@ -73,9 +78,50 @@ function cameraApiAvailable(): boolean {
   )
 }
 
-/** Scanning needs both halves: a camera to read from and a decoder to read with. */
+/**
+ * Scanning needs a camera. A decoder is always available now — native where the
+ * runtime has one, `qr-scanner` where it does not — so camera access is the
+ * only thing that can rule scanning out.
+ */
 function scanningSupported(): boolean {
-  return cameraApiAvailable() && detectorCtor() !== null
+  return cameraApiAvailable()
+}
+
+/** One decoded frame, or null. Both decoders are normalised to this. */
+type DecodeFrame = (video: HTMLVideoElement) => Promise<string | null>
+
+/**
+ * Picks a decoder for this runtime.
+ *
+ * Native first: zero bytes, and the browser does the work off the main thread.
+ * Otherwise `qr-scanner`, loaded on demand — the import only happens once a
+ * provider has actually pressed Scan on a runtime that needs it.
+ */
+async function resolveDecoder(): Promise<DecodeFrame | null> {
+  const Native = detectorCtor()
+  if (Native) {
+    const detector = new Native({ formats: ['qr_code'] })
+    return async (video) => {
+      const codes = await detector.detect(video)
+      return codes[0]?.rawValue?.trim() ?? null
+    }
+  }
+
+  try {
+    const { default: QrScanner } = await import('qr-scanner')
+    return async (video) => {
+      try {
+        const result = await QrScanner.scanImage(video, { returnDetailedScanResult: true })
+        return result.data.trim() || null
+      } catch {
+        // No code in this frame. The normal case, not an error.
+        return null
+      }
+    }
+  } catch {
+    // The decoder chunk could not be fetched — offline, or a blocked CDN.
+    return null
+  }
 }
 
 const DECODE_INTERVAL_MS = 250
@@ -160,29 +206,40 @@ export function useCameraScanner(onDetected: (value: string) => void): CameraSca
       void video.play().catch(() => {})
     }
 
-    const Detector = detectorCtor()
-    if (!Detector) {
+    const decode = await resolveDecoder()
+    if (!decode) {
       setStatus('unsupported')
       return
     }
-    const detector = new Detector({ formats: ['qr_code'] })
+    if (!mounted.current) {
+      stream.getTracks().forEach((track) => track.stop())
+      return
+    }
     setStatus('scanning')
+
+    // Guards against a slow frame overlapping the next tick: decoding a 1080p
+    // frame on a mid-range phone can outrun the interval, and stacking them
+    // makes the camera stutter without finding codes any faster.
+    let decoding = false
 
     loopRef.current = setInterval(() => {
       const element = videoRef.current
-      if (!element || element.readyState < 2) return
-      void detector
-        .detect(element)
-        .then((codes) => {
-          const value = codes[0]?.rawValue?.trim()
+      if (!element || element.readyState < 2 || decoding) return
+      decoding = true
+      void decode(element)
+        .then((value) => {
           if (!value) return
           // One hit ends the scan: the camera should not keep running while the
-          // provider is looking at a confirmation.
+          // provider is looking at a confirmation — and scanning the same code
+          // twice must not produce two lookups.
           stop()
           onDetectedRef.current(value)
         })
         .catch(() => {
           // A frame that cannot be decoded is the normal case, not an error.
+        })
+        .finally(() => {
+          decoding = false
         })
     }, DECODE_INTERVAL_MS)
   }, [stop])

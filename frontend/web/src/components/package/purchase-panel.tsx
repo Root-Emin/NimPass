@@ -45,6 +45,8 @@ export function PurchasePanel({ item, flow }: { item: PackageListing; flow: Purc
         <PaymentStateView
           state={flow.state}
           onRetry={mayRetryPayment(flow.state) ? () => void flow.start() : undefined}
+          onReconcile={() => void flow.reconcile()}
+          reconciling={flow.reconciling}
         />
 
         {flow.state.kind === 'COMPLETE' ? null : (

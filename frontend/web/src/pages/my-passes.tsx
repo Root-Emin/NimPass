@@ -7,7 +7,9 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/states'
 import { Skeleton } from '@/components/ui/skeleton'
+import { PurchaseAttentionList } from '@/components/payment/purchase-attention-list'
 import { useMyPasses } from '@/hooks/use-passes'
+import { needsAttention, useMyPurchases } from '@/hooks/use-purchases'
 import { useSession } from '@/hooks/use-session'
 import { useWallet } from '@/hooks/use-wallet'
 import { SignInDialog } from '@/components/wallet/sign-in-dialog'
@@ -22,6 +24,11 @@ import { SignInDialog } from '@/components/wallet/sign-in-dialog'
 export function MyPassesPage() {
   const { session, isRecovering } = useSession()
   const passes = useMyPasses()
+  // Purchases that produced no pass. A compensation case lives only here, so
+  // this list is the difference between a verified payment the customer can
+  // still see and one that silently disappeared from the app (§28, §29).
+  const purchases = useMyPurchases()
+  const unresolved = purchases.data ? needsAttention(purchases.data) : []
 
   return (
     <Page>
@@ -39,7 +46,7 @@ export function MyPassesPage() {
           <LoadingState label="Loading passes…" />
         ) : passes.isError ? (
           <ErrorState error={passes.error} onRetry={() => void passes.refetch()} />
-        ) : passes.data.length === 0 ? (
+        ) : (passes.data?.length ?? 0) === 0 && unresolved.length === 0 ? (
           <EmptyState
             title="No passes yet"
             description="When you buy a session package, your pass will appear here."
@@ -50,11 +57,14 @@ export function MyPassesPage() {
             }
           />
         ) : (
-          <div className="grid gap-5 sm:grid-cols-2">
-            {passes.data.map((pass) => (
-              <PassCard key={pass.id} pass={pass} />
-            ))}
-          </div>
+          <>
+            <PurchaseAttentionList purchases={unresolved} />
+            <div className="grid gap-5 sm:grid-cols-2">
+              {(passes.data ?? []).map((pass) => (
+                <PassCard key={pass.id} pass={pass} />
+              ))}
+            </div>
+          </>
         )}
       </div>
     </Page>

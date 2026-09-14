@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { ApiError, providerApi, queryKeys } from '@/api'
+import { ApiError, providerApi, queryKeys, redemptionsApi } from '@/api'
 import { useSession } from '@/hooks/use-session'
 import { signMessage } from '@/lib/nimiq'
 import type { Pass, ServiceStatus } from '@/types/domain'
@@ -267,5 +267,24 @@ export function useVerifyPayoutWallet() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.provider.profile() })
     },
+  })
+}
+
+/**
+ * The provider's own redemption history (`GET /providers/{providerID}/redemptions`).
+ *
+ * Operational, not analytical: the newest consumed sessions this provider
+ * serviced, as the backend recorded them. Nothing is aggregated, averaged or
+ * projected here — the contract returns rows, and rows are what this shows
+ * (docs/08-ARCHITECTURE.md §11).
+ */
+export function useProviderRedemptions() {
+  const providerId = useActiveProviderId()
+  return useQuery({
+    queryKey: queryKeys.redemptions.provider(providerId ?? ''),
+    queryFn: ({ signal }) =>
+      redemptionsApi.listProviderRedemptions(providerId as string, { signal }),
+    enabled: Boolean(providerId),
+    select: (response) => response.items,
   })
 }

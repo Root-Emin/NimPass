@@ -25,8 +25,26 @@ export function DialogContent({
       <DialogPrimitive.Content
         className={cn(
           'fixed left-1/2 top-1/2 z-50 flex w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 flex-col gap-4 rounded-xl border border-line bg-surface p-6 shadow-raised',
+          /*
+           * Never taller than the viewport, and scrollable when the content
+           * wants more room.
+           *
+           * The redemption sheet is what forces this: a QR code, a countdown, a
+           * readable reference and two buttons do not fit a phone in landscape,
+           * and a centred dialog that overflows puts its actions off both edges
+           * at once with no way to reach them. `dvh` rather than `vh` so the
+           * mobile browser's collapsing address bar does not leave the bottom
+           * of the sheet under the chrome.
+           */
+          'max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain',
           className,
         )}
+        // Keeps the sheet clear of the notch and home indicator inside the
+        // Nimiq Pay WebView.
+        style={{
+          paddingTop: 'max(1.5rem, env(safe-area-inset-top))',
+          paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom))',
+        }}
         {...props}
       >
         <div className="flex items-start justify-between gap-4">

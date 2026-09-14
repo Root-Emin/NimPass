@@ -152,6 +152,7 @@ export type PurchaseUiStatus =
   | 'confirmed'
   | 'pass_provisioning'
   | 'completed'
+  | 'compensation_required'
   | 'cancelled'
   | 'expired'
   | 'permanently_failed'
@@ -164,6 +165,7 @@ export type PurchaseRecordStatus =
   | 'VERIFYING'
   | 'AWAITING_FINALITY'
   | 'CONFIRMED'
+  | 'COMPENSATION_REQUIRED'
   | 'FAILED'
   | 'CANCELLED'
   | 'EXPIRED'
@@ -176,6 +178,34 @@ export type PaymentVerification =
   | 'INCLUDED'
   | 'AWAITING_FINALITY'
   | 'MISMATCH'
+  | 'COMPENSATION_REQUIRED'
+
+/**
+ * The compensation case (`Compensation`).
+ *
+ * This is the contract's answer to a genuinely awkward outcome: the payment was
+ * verified and macro-finalised on chain, but the package's fixed expiration
+ * passed before a pass could be activated, so the backend committed the receipt
+ * and opened a compensation case instead of issuing an entitlement.
+ *
+ * Two of these fields are safety flags rather than data, and the spec pins both
+ * to a single value (`doNotPayAgain: true`, `automatedRefund: false`). They are
+ * still read from the wire rather than assumed, but nothing in the UI may
+ * reverse their meaning: there is no backend wallet custody and no automatic
+ * refund, so the frontend must never suggest money is on its way back.
+ */
+export interface Compensation {
+  /** `OPEN` until a human resolves it. Not a payment status. */
+  status: 'OPEN' | 'RESOLVED'
+  reason: 'PACKAGE_EXPIRED_BEFORE_ACTIVATION'
+  createdAt: string
+  /** The backend's own explanation. Rendered as supporting detail, not as the headline. */
+  message: string
+  /** Always true. The one flag that must never be inverted by a client default. */
+  doNotPayAgain: boolean
+  /** Always false. Refund and reissue are manual, between customer and provider. */
+  automatedRefund: boolean
+}
 
 /**
  * A purchase intent and its authoritative payment state (`Purchase`).
@@ -206,6 +236,15 @@ export interface Purchase {
   passId: string | null
   /** Present only while the intent is still awaiting payment. */
   paymentRequest: PaymentRequest | null
+  /**
+   * Present only in `COMPENSATION_REQUIRED`. A verified payment with no pass.
+   *
+   * Note the shape: `doNotPayAgain` and `automatedRefund` live *here*, not on
+   * the purchase root. Reading them off `Purchase` returns `undefined`, which
+   * is falsy — and a falsy `doNotPayAgain` is the exact inversion of the
+   * guarantee it encodes.
+   */
+  compensation: Compensation | null
 }
 
 /* -- Pass ---------------------------------------------------------------- */
@@ -239,34 +278,134 @@ export interface Pass {
 
 /* -- Redemption ----------------------------------------------------------
  *
- * NOT IN THE CONTRACT YET. `backend/openapi.yaml` defines no redemption
- * endpoints and `GET /passes/{passID}` is explicitly documented as "no
- * redemption in Mission 03". These shapes describe what the redemption UI
- * already renders; they are the boundary Mission 04 will fill in, and nothing
- * in the app treats them as available (docs/09-SECURITY.md §43-§44).
+ * The shapes `backend/openapi.yaml` defines, as Mission 04.1 canonicalised
+ * them. The speculative versions this block used to hold are gone.
+ *
+ * The flow these types describe is the security model, so it is worth stating
+ * plainly: a challenge is created, the *pass owner* signs the server's exact
+ * canonical message, and only that authorisation produces a short-lived NR1
+ * bearer reference. The signature is mandatory — there is no field anywhere
+ * that makes it optional, and no path to a usable reference without one.
  * -------------------------------------------------------------------- */
 
+/** `RedemptionChallenge.status`. */
 export type RedemptionStatus = 'CREATED' | 'AUTHORIZED' | 'CONSUMED' | 'EXPIRED' | 'CANCELLED'
 
-export interface RedemptionChallenge {
-  id: string
-  passId: string
-  /** The only thing that goes into a QR code (docs/09-SECURITY.md §45). */
-  reference: string
-  status: RedemptionStatus
-  expiresAt: string
-  requiresWalletSignature: boolean
-  /** Server-built message to sign when required. Never composed client-side. */
-  signingMessage: string | null
+/** The only signing purpose redemption uses. Server-authored, never composed here. */
+export type RedemptionPurpose = 'AUTHORIZE_REDEMPTION'
+
+/** The pass counters carried inside a challenge response. */
+export interface RedemptionChallengePass {
+  status: PassStatus
+  originalSessions: number
+  usedSessions: number
+  remainingSessions: number
+  expiresAt: string | null
 }
 
-export interface Redemption {
+/** Set once the challenge has been consumed by a provider. */
+export interface RedemptionChallengeRedemption {
   id: string
+  sessionOrdinal: number
+  redeemedAt: string
+}
+
+/**
+ * A redemption challenge (`RedemptionChallenge`).
+ *
+ * `message` is the exact UTF-8 string to hand to Nimiq Pay's `sign()`. It
+ * already carries its own domain separation (`Purpose: AUTHORIZE_REDEMPTION`),
+ * the challenge and pass ids, the wallet, the network, a nonce and the expected
+ * session counters. Reconstructing, trimming or prefixing any of it produces a
+ * signature over different bytes, which the backend will reject — correctly.
+ *
+ * `redemptionReference` is deliberately nullable and deliberately rare: the
+ * contract returns it **only** from the authorization response and from a
+ * challenge rotation. Reading a challenge back — `GET .../current` or
+ * `GET /redemption-challenges/{id}` — never includes it.
+ */
+export interface RedemptionChallenge {
+  challengeId: string
   passId: string
+  providerId: string
+  purpose: RedemptionPurpose
   status: RedemptionStatus
-  completedAt: string | null
-  /** Authoritative post-redemption balance, as returned by the backend. */
+  /** Sign this exact string. Never rebuild it. */
+  message: string
+  createdAt: string
+  expiresAt: string
+  authorizedAt: string | null
+  consumedAt: string | null
+  pass: RedemptionChallengePass
+  redemption: RedemptionChallengeRedemption | null
+  /** `NR1:` + 64 lowercase hex. Present only after authorisation or rotation. */
+  redemptionReference: string | null
+  qrExpiresAt: string | null
+}
+
+/**
+ * What a provider may see before consuming anything (`RedemptionLookup`).
+ *
+ * Privacy-minimised on purpose: enough to know which service, which package and
+ * which session is about to be used, and nothing identifying the customer. No
+ * wallet, no email, no identity id. The narrowness is the feature
+ * (docs/09-SECURITY.md §38, §92).
+ *
+ * Note the enums: the backend only ever returns this shape for a challenge that
+ * is `AUTHORIZED` against an `ACTIVE` pass. Anything else is an error response,
+ * not a lookup with a different status — so these are single-member unions
+ * rather than the full status sets.
+ */
+export interface RedemptionLookup {
+  challengeId: string
+  passId: string
+  providerId: string
+  serviceName: string
+  packageTitle: string
+  challengeStatus: 'AUTHORIZED'
+  authorizationStatus: 'AUTHORIZED'
+  passStatus: 'ACTIVE'
+  usedSessions: number
   remainingSessions: number
+  /** Which session this confirmation would consume. 1-based. */
+  nextSessionOrdinal: number
+  passExpiresAt: string | null
+  challengeExpiresAt: string
+  referenceExpiresAt: string | null
+}
+
+/**
+ * The authoritative result of consuming one session
+ * (`RedemptionConfirmationResult`).
+ *
+ * Every number here is the backend's. The frontend does not compute
+ * `remaining - 1` anywhere — it reads these and refetches
+ * (docs/08-ARCHITECTURE.md §49).
+ */
+export interface RedemptionConfirmation {
+  redemptionId: string
+  passId: string
+  redeemedAt: string
+  usedSessions: number
+  remainingSessions: number
+  passStatus: PassStatus
+  /** True when this consumption took the pass to zero remaining. */
+  completed: boolean
+}
+
+/** One consumed session (`RedemptionHistoryItem`). Only consumed rows exist. */
+export interface RedemptionHistoryItem {
+  redemptionId: string
+  challengeId: string
+  passId: string
+  providerId: string
+  serviceId: string
+  packageId: string
+  /** 1-based position in this pass's session sequence. */
+  sessionOrdinal: number
+  ownerWallet: string
+  redeemedAt: string
+  status: 'CONSUMED'
 }
 
 /**

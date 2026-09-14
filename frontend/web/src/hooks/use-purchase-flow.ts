@@ -8,10 +8,16 @@ import {
   getNetworkReadiness,
   sendBasicTransactionWithData,
 } from '@/lib/nimiq'
+import { useRevalidateOnForeground } from '@/hooks/use-foreground'
 import { createIdempotencyKey } from '@/lib/utils'
 import type { Purchase } from '@/types/domain'
 import type { PaymentFailureReason, PaymentState } from '@/types/payment'
-import { WALLET_ERROR_TO_FAILURE_REASON, paymentStateFromPurchase } from '@/types/payment'
+import {
+  WALLET_ERROR_TO_FAILURE_REASON,
+  isSettlingPaymentState,
+  isTerminalPaymentState,
+  paymentStateFromPurchase,
+} from '@/types/payment'
 import type { NimiqErrorKind } from '@/types/wallet'
 
 /**
@@ -39,7 +45,23 @@ import type { NimiqErrorKind } from '@/types/wallet'
 const VERIFICATION_DELAY_NOTICE_MS = 15_000
 /** Upper bound on polling one purchase, after which we stop claiming progress. */
 const VERIFICATION_TIMEOUT_MS = 120_000
+/** First gap between polls. Short, because most purchases settle quickly. */
 const POLL_INTERVAL_MS = 2_500
+/** Ceiling for the backoff. Macro-block finality is measured in minutes. */
+const POLL_INTERVAL_MAX_MS = 15_000
+
+/**
+ * Poll gaps widen as waiting goes on.
+ *
+ * The backend runs its own background reconciler, so this loop exists to keep
+ * *this screen* current, not to drive settlement. Hammering `GET /purchases/{id}`
+ * every 2.5s for two minutes would duplicate work the worker is already doing
+ * (§20 of this milestone) while telling the customer nothing new — awaiting
+ * finality resolves on a macro block, not on how often we ask.
+ */
+function pollDelay(attempt: number): number {
+  return Math.min(POLL_INTERVAL_MS * 1.5 ** attempt, POLL_INTERVAL_MAX_MS)
+}
 
 export interface PurchaseFlow {
   state: PaymentState
@@ -47,6 +69,17 @@ export interface PurchaseFlow {
   reset: () => void
   /** Resumes watching a purchase after a refresh or a return from Nimiq Pay. */
   resume: (purchaseId: string) => Promise<void>
+  /**
+   * Asks the backend to re-check the chain, once, on the customer's command.
+   *
+   * The manual half of reconciliation (§20). Available where waiting is the
+   * only other option — uncertain, or awaiting finality — and safe to press
+   * repeatedly: reconciling never authorises a payment, it only re-reads
+   * evidence that already exists.
+   */
+  reconcile: () => Promise<void>
+  /** True while a manual reconcile is in flight. */
+  reconciling: boolean
   /** True while a wallet or network step is in flight. */
   busy: boolean
   /**
@@ -67,6 +100,8 @@ export function usePurchaseFlow(packageId: string | undefined): PurchaseFlow {
   // startable states, but a hook this consequential should not depend on a
   // caller rendering the right thing.
   const starting = useRef(false)
+  const reconciling = useRef(false)
+  const [isReconciling, setReconciling] = useState(false)
   /**
    * Set once the wallet has returned a transaction hash for this attempt.
    *
@@ -121,6 +156,8 @@ export function usePurchaseFlow(packageId: string | undefined): PurchaseFlow {
       const startedAt = Date.now()
       const signal = abortRef.current?.signal
 
+      let attempt = 0
+
       const tick = async () => {
         if (!mounted.current) return
 
@@ -138,12 +175,29 @@ export function usePurchaseFlow(packageId: string | undefined): PurchaseFlow {
         const mapped = advanceOnly(paymentStateFromPurchase(latest), broadcast.current)
 
         if (mapped.kind === 'COMPLETE') {
+          // Both caches: the pass list is assembled from the purchase list, so
+          // invalidating only the passes would rebuild them from a stale set of
+          // purchases and miss the one just created.
+          void queryClient.invalidateQueries({ queryKey: queryKeys.purchases.all })
           void queryClient.invalidateQueries({ queryKey: queryKeys.passes.all })
           safeSet(mapped)
           return
         }
 
-        if (mapped.kind === 'FAILED' || mapped.kind === 'CANCELLED') {
+        // Every state the backend has finished deciding stops the loop.
+        //
+        // COMPENSATION_REQUIRED belongs here for a reason that is easy to miss:
+        // it is not a state the backend moves on from, so polling past it would
+        // do nothing for two minutes and then hit the timeout below — which
+        // rewrites the state as UNCERTAIN. That would take a verified payment
+        // the backend explained precisely and turn it into "we can't tell",
+        // losing both the receipt and the do-not-pay-again guarantee (§2, §38).
+        if (isTerminalPaymentState(mapped)) {
+          // A compensation case belongs in the customer's purchase list from
+          // the moment it exists, so refresh it here too (§29).
+          if (mapped.kind === 'COMPENSATION_REQUIRED') {
+            void queryClient.invalidateQueries({ queryKey: queryKeys.purchases.all })
+          }
           safeSet(mapped)
           return
         }
@@ -158,7 +212,11 @@ export function usePurchaseFlow(packageId: string | undefined): PurchaseFlow {
               signal,
             })
             const after = advanceOnly(paymentStateFromPurchase(reconciled), broadcast.current)
-            safeSet(after.kind === 'COMPLETE' ? after : { kind: 'UNCERTAIN', purchase: reconciled })
+            // Only fall back to UNCERTAIN when the re-check produced no verdict.
+            // A reconcile that answers COMPENSATION_REQUIRED — or any other
+            // settled outcome — is the definite answer we were waiting for, and
+            // overwriting it with "we can't tell" would discard it.
+            safeSet(isTerminalPaymentState(after) ? after : { kind: 'UNCERTAIN', purchase: reconciled })
           } catch {
             safeSet({ kind: 'UNCERTAIN', purchase: latest })
           }
@@ -171,7 +229,7 @@ export function usePurchaseFlow(packageId: string | undefined): PurchaseFlow {
             : mapped,
         )
 
-        pollTimer.current = setTimeout(() => void tick(), POLL_INTERVAL_MS)
+        pollTimer.current = setTimeout(() => void tick(), pollDelay(attempt++))
       }
 
       await tick()
@@ -197,8 +255,43 @@ export function usePurchaseFlow(packageId: string | undefined): PurchaseFlow {
         { packageId: pkgId },
         { idempotencyKey: keyFor('intent'), signal: controller.signal },
       )
+
+      /*
+       * One idempotency key per attempt is what stops a double click becoming
+       * two intents — but the backend binds a key to its purchase permanently,
+       * so a key that has already produced an intent keeps answering with that
+       * same intent even after it has expired. Left alone, a customer who
+       * cancelled and came back half an hour later would press Buy forever and
+       * be handed the same dead record every time.
+       *
+       * So the key rotates, once, and only on the backend's own evidence that
+       * the old intent is finished and carried no payment: it must be expired
+       * or cancelled, hold no transaction hash, and offer no payment request.
+       * Every may-have-paid state — submitted, verifying, awaiting finality,
+       * uncertain, compensation — fails that test and is left exactly where it
+       * is, because minting a fresh intent there is how a second payment
+       * happens (§19).
+       */
+      if (isSpentIntent(purchase) && !broadcast.current) {
+        attemptId.current = createIdempotencyKey()
+        purchase = await purchasesApi.createPurchaseIntent(
+          { packageId: pkgId },
+          { idempotencyKey: keyFor('intent'), signal: controller.signal },
+        )
+      }
     } catch (error) {
       if (error instanceof ApiError && error.isAborted) return
+      // The backend refuses a new intent once a fixed-expiration package is
+      // inside its purchase cutoff (409 PACKAGE_PURCHASE_CUTOFF). That is a
+      // specific, explainable answer — not a failed payment and not a network
+      // problem — so it gets its own state rather than "something went wrong".
+      //
+      // The cutoff itself is never recomputed here. This branch reacts to the
+      // backend's decision; it does not predict it (§8).
+      if (error instanceof ApiError && error.code === 'PACKAGE_PURCHASE_CUTOFF') {
+        safeSet({ kind: 'PURCHASE_CUTOFF', purchase: null })
+        return
+      }
       safeSet({
         kind: 'FAILED',
         purchase: null,
@@ -280,6 +373,18 @@ export function usePurchaseFlow(packageId: string | undefined): PurchaseFlow {
       )
     } catch (error) {
       if (error instanceof ApiError && error.isAborted) return
+      // A 409 here is the backend refusing to bind this hash to this purchase:
+      // the amount, recipient or reference did not match, or the transaction is
+      // already claimed by another purchase (§33). Unlike a lost response, that
+      // is a definite verdict and polling will not change it.
+      //
+      // It is still not a "nothing happened" failure — the wallet broadcast, so
+      // the money very likely moved. `PAYMENT_CONFLICT` is therefore in
+      // `UNSAFE_TO_RETRY`: the message explains, and offers no way to pay again.
+      if (error instanceof ApiError && error.code === 'PAYMENT_CONFLICT') {
+        safeSet({ kind: 'FAILED', purchase, reason: 'PAYMENT_CONFLICT' })
+        return
+      }
       // The transaction was submitted but we could not tell the backend.
       // Keep polling rather than declaring anything.
       safeSet({ kind: 'UNCERTAIN', purchase })
@@ -329,7 +434,11 @@ export function usePurchaseFlow(packageId: string | undefined): PurchaseFlow {
         // payment — it is a stale or wrong id, and telling the customer "we
         // can't confirm your payment" would be alarming and false. Anything
         // else (offline, 5xx) genuinely is uncertain (docs/05 §62).
-        if (error instanceof ApiError && error.status === 404) {
+        // 404 and FORBIDDEN mean the same thing to a customer: this purchase is
+        // not theirs to see. Object-level authorisation is decided server-side
+        // and the frontend only normalises the answer — it never assumes an id
+        // it holds grants access to the record behind it (§30).
+        if (error instanceof ApiError && (error.status === 404 || error.code === 'FORBIDDEN')) {
           broadcast.current = false
           safeSet({ kind: 'IDLE' })
           return
@@ -340,12 +449,75 @@ export function usePurchaseFlow(packageId: string | undefined): PurchaseFlow {
     [cancelPending, pollUntilSettled, safeSet],
   )
 
+  /**
+   * The customer-initiated re-check (§20).
+   *
+   * Deliberately thin: it asks the backend to look again and renders whatever
+   * comes back. It cannot advance a purchase on its own, and it never creates
+   * an intent or a transaction, so the worst a frantic tapping produces is a
+   * few extra reads.
+   *
+   * `advanceOnly` still applies — a reconcile that answers with a pre-payment
+   * state after a broadcast is reported as uncertain, not as "ready to pay".
+   */
+  const reconcile = useCallback(async () => {
+    const id = purchaseIdOf(state)
+    if (!id || reconciling.current) return
+    reconciling.current = true
+    setReconciling(true)
+    try {
+      const latest = await purchasesApi.reconcilePurchase(id, {
+        idempotencyKey: keyFor('reconcile'),
+      })
+      safeSet(advanceOnly(paymentStateFromPurchase(latest), broadcast.current))
+    } catch (error) {
+      // A re-check that fails tells us nothing new, so it must not downgrade a
+      // state the backend already settled. Only an in-flight wait becomes
+      // uncertain; a compensation case or a completed purchase stays put.
+      if (error instanceof ApiError && error.isAborted) return
+      if (!isTerminalPaymentState(state)) {
+        safeSet({ kind: 'UNCERTAIN', purchase: 'purchase' in state ? state.purchase : null })
+      }
+    } finally {
+      reconciling.current = false
+      if (mounted.current) setReconciling(false)
+    }
+  }, [keyFor, safeSet, state])
+
   const reset = useCallback(() => {
     cancelPending()
     attemptId.current = createIdempotencyKey()
     broadcast.current = false
     safeSet({ kind: 'IDLE' })
   }, [cancelPending, safeSet])
+
+  /**
+   * Coming back to a settling purchase: re-read it.
+   *
+   * The poll loop is a `setTimeout` chain, which a backgrounded mobile WebView
+   * throttles hard or suspends outright. A customer who approves a payment,
+   * locks the phone through macro-block finality and comes back would otherwise
+   * find the same spinner the tab froze on — while the purchase has long since
+   * confirmed, failed, or become a compensation case.
+   *
+   * Reconciling is the safe thing to do here: it re-reads evidence and can
+   * never authorise a payment, so a revalidation that fires on every foreground
+   * cannot cost the customer anything.
+   */
+  useRevalidateOnForeground(
+    useCallback(() => {
+      const id = purchaseIdOf(state)
+      if (!id) return
+      if (!isSettlingPaymentState(state) && state.kind !== 'UNCERTAIN') return
+      void purchasesApi
+        .getPurchase(id)
+        .then((latest) => safeSet(advanceOnly(paymentStateFromPurchase(latest), broadcast.current)))
+        .catch(() => {
+          // Still unreachable; the poll loop keeps its own counsel.
+        })
+    }, [safeSet, state]),
+    true,
+  )
 
   const busy =
     state.kind === 'CREATING_INTENT' ||
@@ -357,7 +529,33 @@ export function usePurchaseFlow(packageId: string | undefined): PurchaseFlow {
     state.kind === 'CONFIRMED' ||
     state.kind === 'PASS_CREATING'
 
-  return { state, start, reset, resume, busy, purchaseId: purchaseIdOf(state) }
+  return {
+    state,
+    start,
+    reset,
+    resume,
+    reconcile,
+    reconciling: isReconciling,
+    busy,
+    purchaseId: purchaseIdOf(state),
+  }
+}
+
+/**
+ * An intent the backend has finished with, which never carried a payment.
+ *
+ * Every clause is load-bearing. `expired` or `cancelled` is the backend saying
+ * this intent is over; a null `transactionHash` is it saying nothing was ever
+ * submitted against it; a null `paymentRequest` confirms there is nothing left
+ * to pay. Anything less than all three and the safe answer is to leave the
+ * purchase alone.
+ */
+function isSpentIntent(purchase: Purchase): boolean {
+  return (
+    (purchase.status === 'expired' || purchase.status === 'cancelled') &&
+    purchase.transactionHash === null &&
+    purchase.paymentRequest === null
+  )
 }
 
 /** USER_REJECTED is handled before this point; it is a cancellation. */

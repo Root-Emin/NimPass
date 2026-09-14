@@ -7,7 +7,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { SignInDialog } from '@/components/wallet/sign-in-dialog'
 import { useSession } from '@/hooks/use-session'
 import { useWallet } from '@/hooks/use-wallet'
-import { shortenAddress } from '@/lib/format'
+import { normaliseAddress, shortenAddress } from '@/lib/format'
 import { miniAppOpenerUrl, networkLabel } from '@/lib/nimiq'
 
 /**
@@ -33,6 +33,26 @@ export function WalletControl() {
   }
 
   if (session) {
+    /*
+     * The wallet's active account and the signed-in identity can drift apart:
+     * Nimiq Pay lets someone switch accounts while a Nimpass session is open,
+     * and that session stays bound to the wallet it was issued for.
+     *
+     * Nothing unsafe follows from that — the session identity is the backend's,
+     * and every consequential operation is checked against it server-side. What
+     * follows is *confusing*: a payment signed by the new account fails the
+     * backend's sender check, and a redemption signature fails verification,
+     * both with errors that look like bugs rather than like "you switched
+     * wallets". Saying so plainly turns a mystifying failure into an obvious
+     * one-step fix (§24).
+     *
+     * Compared on the normalised form, because addresses are displayed with
+     * spaces and the wallet may hand them back either way.
+     */
+    const active = wallet.account
+    const mismatched =
+      active !== null && normaliseAddress(active) !== normaliseAddress(session.identity.wallet)
+
     return (
       <>
         <button
@@ -49,6 +69,17 @@ export function WalletControl() {
             title="Your Nimpass account"
             description={`Signed in with ${shortenAddress(session.identity.wallet)} on ${networkLabel(wallet.network)}.`}
           >
+            {mismatched ? (
+              <div className="rounded-md border border-warning/25 bg-warning-soft p-4" role="status">
+                <p className="text-body font-medium text-ink">You've switched wallets</p>
+                <p className="mt-1 text-small text-ink-muted">
+                  Nimpass is signed in with {shortenAddress(session.identity.wallet)}, but your
+                  wallet is now on {shortenAddress(active)}. Sign out and back in to use this one —
+                  otherwise payments and session codes will be refused.
+                </p>
+              </div>
+            ) : null}
+
             <div className="flex justify-end gap-3">
               <Button
                 variant="secondary"

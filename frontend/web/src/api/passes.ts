@@ -9,10 +9,13 @@ import { apiRequest } from './client'
  * client never passes an owner id (docs/09-SECURITY.md §32, §36). A pass
  * belonging to someone else is a 404, not a filtered-out row.
  *
- * BACKEND CONTRACT STILL MISSING: there is no `GET /me/passes` list and no
- * session-history endpoint. `backend/openapi.yaml` defines this single lookup
- * and notes "no redemption in Mission 03", so My Passes reaches its passes
- * through the purchases that produced them, and history has no source at all.
+ * BACKEND CONTRACT STILL MISSING: there is no pass *list* endpoint. My Passes
+ * therefore reaches its passes through the purchases that produced them — see
+ * `hooks/use-passes.ts` for the limits that workaround carries.
+ *
+ * Session history is no longer missing: the backend shipped
+ * `GET /passes/{passID}/redemptions` with Mission 04. Pass Detail does not read
+ * it yet, because the rest of that contract is unwired (Milestone 4B).
  */
 export function getPass(id: string, signal?: AbortSignal): Promise<Pass> {
   return apiRequest<Pass>(`/api/v1/passes/${encodeURIComponent(id)}`, { signal })

@@ -26,6 +26,12 @@ import { apiRequest } from './client'
  *
  * `Idempotency-Key` is bound to the customer; reusing one with a different
  * package is a 409 (docs/05 §68).
+ *
+ * A fixed-expiration package stops accepting *new* intents 35 minutes before it
+ * expires — `409 PACKAGE_PURCHASE_CUTOFF`. That arithmetic stays on the server:
+ * an intent created before the cutoff remains valid for the rest of its TTL,
+ * and the spec is explicit that such an intent is still returned here after the
+ * cutoff has passed. Nothing in this client predicts the boundary.
  */
 export function createPurchaseIntent(
   input: { packageId: string },
@@ -84,6 +90,12 @@ export function submitTransaction(
  * finality. Safe to retry by design: the spec states that not-found and RPC
  * outages stay *uncertain* and never authorise a second payment
  * (docs/05 §62-§63, §95-§97).
+ *
+ * Two outcomes are possible once the evidence is finalised, and the spec names
+ * both. If the snapshotted package is still usable, one pass is created in an
+ * atomic database transaction. If its fixed expiry has passed first, the
+ * verified receipt is committed with a `COMPENSATION_REQUIRED` case instead —
+ * no pass, and explicitly no second payment request.
  *
  * This requests a re-check; it never asserts an outcome.
  */

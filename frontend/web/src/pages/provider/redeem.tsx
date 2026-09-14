@@ -3,6 +3,10 @@ import { useCallback, useRef, useState, type RefObject } from 'react'
 import { Link } from 'react-router-dom'
 
 import { ApiError, messageForApiError, queryKeys, redemptionsApi } from '@/api'
+import {
+  looksLikeRedemptionReference,
+  normaliseRedemptionReference,
+} from '@/api/redemptions'
 import { useQueryClient } from '@tanstack/react-query'
 import { WorkspaceHeader } from '@/components/layout/provider-shell'
 import { WorkspaceGate } from '@/components/provider/workspace-gate'
@@ -12,8 +16,8 @@ import { Card } from '@/components/ui/card'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { useCameraScanner, type CameraStatus } from '@/hooks/use-camera-scanner'
-import { createIdempotencyKey } from '@/lib/utils'
-import { formatSessions } from '@/lib/format'
+import { useProviderAccount, useProviderRedemptions } from '@/hooks/use-provider-workspace'
+import { formatDateTime, formatSessions, shortenAddress } from '@/lib/format'
 import type { ProviderRedemptionState } from '@/types/redemption'
 
 /**
@@ -46,77 +50,89 @@ export function ProviderRedeemPage() {
 
 function RedeemFlow() {
   const queryClient = useQueryClient()
+  const providerId = useProviderAccount().providerId
   const [state, setState] = useState<ProviderRedemptionState>({ kind: 'IDLE' })
   const [code, setCode] = useState('')
-  // Guards the confirm step: a double tap must never become two completions.
-  // The backend is idempotent per redemption, but the UI should not rely on
-  // that to avoid asking twice (docs/09-SECURITY.md §55).
+  /*
+   * Guards the confirm step. A double tap must never become two confirmations.
+   *
+   * This is a UX lock and nothing more: the reference is single-use and the
+   * backend enforces that inside the consuming transaction. Presenting this
+   * ref as the protection would be presenting the wrong thing as the guarantee
+   * (§34).
+   */
   const completing = useRef(false)
 
-  const lookup = useCallback(async (reference: string) => {
-    const trimmed = reference.trim()
-    if (!trimmed) return
-
-    setState({ kind: 'LOOKING_UP', reference: trimmed })
-    try {
-      const found = await redemptionsApi.lookupRedemptionChallenge(trimmed)
-      setState({
-        kind: 'CONFIRMING',
-        reference: trimmed,
-        redemptionId: found.redemptionId,
-        pass: found.pass,
-      })
-    } catch (error) {
-      // A code the backend refuses is a domain answer — expired, already used,
-      // another provider's customer — and reads as a rejection. Not being able
-      // to ask at all is a different thing and says so.
-      if (error instanceof ApiError && error.isDomainError) {
-        setState({ kind: 'REJECTED', reason: messageForApiError(error) })
-      } else {
-        setState({ kind: 'UNAVAILABLE', message: messageForApiError(error) })
-      }
+  /** Turns a backend rejection into provider-facing copy. */
+  const reject = useCallback((error: unknown) => {
+    if (error instanceof ApiError && error.isDomainError) {
+      setState({ kind: 'REJECTED', reason: messageForApiError(error), code: error.code })
+      return
     }
+    setState({ kind: 'UNAVAILABLE', message: messageForApiError(error) })
   }, [])
+
+  /**
+   * Resolves a reference to context. **Consumes nothing.**
+   *
+   * A successful lookup is not a redemption and must never be rendered as one.
+   * It exists so the provider can see what they are about to spend before they
+   * spend it (§18).
+   */
+  const lookup = useCallback(
+    async (reference: string) => {
+      if (!providerId) return
+      const trimmed = normaliseRedemptionReference(reference)
+      if (!trimmed) return
+
+      setState({ kind: 'LOOKING_UP', reference: trimmed })
+      try {
+        const found = await redemptionsApi.lookupRedemption(providerId, {
+          redemptionReference: trimmed,
+        })
+        setState({ kind: 'CONFIRMING', reference: trimmed, lookup: found })
+      } catch (error) {
+        reject(error)
+      }
+    },
+    [providerId, reject],
+  )
 
   const scanner = useCameraScanner(
     useCallback(
       (value) => {
         setCode(value)
+        // A scan fills the field and looks the code up. It deliberately stops
+        // there: the confirm step below is a separate, human decision (§22).
         void lookup(value)
       },
       [lookup],
     ),
   )
 
+  /** The one call that consumes a session. */
   const confirm = useCallback(async () => {
     if (state.kind !== 'CONFIRMING') return
-    if (completing.current) return
+    if (completing.current || !providerId) return
     completing.current = true
 
-    const { reference, redemptionId, pass } = state
-    setState({ kind: 'COMPLETING', reference, redemptionId })
+    const { reference, lookup: context } = state
+    setState({ kind: 'COMPLETING', reference, lookup: context })
     try {
-      const result = await redemptionsApi.completeRedemption(redemptionId, {
-        idempotencyKey: createIdempotencyKey(),
+      const result = await redemptionsApi.confirmRedemption(providerId, {
+        redemptionReference: reference,
       })
-      // The new balance is the backend's number, read back — never
-      // `remaining - 1` computed here (docs/08-ARCHITECTURE.md §49).
-      setState({
-        kind: 'COMPLETED',
-        remaining: result.remainingSessions,
-        packageTitle: pass.packageTitle,
-      })
+      // Every number here is the backend's, read back from the transaction that
+      // wrote it. Nothing computes `remaining - 1` (§24).
+      setState({ kind: 'COMPLETED', result, lookup: context })
       void queryClient.invalidateQueries({ queryKey: queryKeys.provider.passes() })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.redemptions.provider(providerId) })
     } catch (error) {
-      if (error instanceof ApiError && error.isDomainError) {
-        setState({ kind: 'REJECTED', reason: messageForApiError(error) })
-      } else {
-        setState({ kind: 'UNAVAILABLE', message: messageForApiError(error) })
-      }
+      reject(error)
     } finally {
       completing.current = false
     }
-  }, [queryClient, state])
+  }, [providerId, queryClient, reject, state])
 
   const reset = useCallback(() => {
     scanner.stop()
@@ -125,14 +141,18 @@ function RedeemFlow() {
   }, [scanner])
 
   if (state.kind === 'COMPLETED') {
+    const { result } = state
     return (
       <Card className="flex flex-col items-start gap-4 p-6">
         <p className="flex items-center gap-2 text-h3 text-ink">
           <CheckCircle2 className="size-5 text-success" aria-hidden="true" />
-          Session completed
+          {result.completed ? 'Session used — pass complete' : 'Session used'}
         </p>
         <p className="text-body text-ink-muted">
-          {state.packageTitle} — {formatSessions(state.remaining)} remaining.
+          {state.lookup ? `${state.lookup.packageTitle} — ` : ''}
+          {result.completed
+            ? 'That was the last session on this pass.'
+            : `${formatSessions(result.remainingSessions)} remaining.`}
         </p>
         <Button onClick={reset}>Redeem another</Button>
       </Card>
@@ -140,33 +160,72 @@ function RedeemFlow() {
   }
 
   if (state.kind === 'CONFIRMING' || state.kind === 'COMPLETING') {
-    const pass = state.kind === 'CONFIRMING' ? state.pass : null
+    const context = state.lookup
+    const busy = state.kind === 'COMPLETING'
     return (
       <Card className="space-y-5 p-6">
         <div className="space-y-1">
-          <h2 className="text-h3 text-ink">{pass?.packageTitle ?? 'Confirming…'}</h2>
-          {pass ? <p className="text-body text-ink-muted">{pass.serviceTitle}</p> : null}
+          <h2 className="text-h3 text-ink">{context.packageTitle}</h2>
+          <p className="text-body text-ink-muted">{context.serviceName}</p>
         </div>
 
-        {pass ? (
-          <>
-            {/* Human-readable consequence, not identifiers (docs/02 §52). */}
-            <div className="rounded-md bg-surface-muted p-4">
-              <p className="text-body text-ink">
-                {formatSessions(pass.sessionsRemaining)} remaining. Use one?
-              </p>
-              <p className="mt-1 text-small text-ink-muted">
-                After this: {formatSessions(Math.max(0, pass.sessionsRemaining - 1))} remaining.
-              </p>
-            </div>
-          </>
-        ) : null}
+        {/*
+          What confirming will actually do, in the provider's terms.
+
+          Only fields the lookup returned. There is no customer name, wallet or
+          identity here because the backend does not send one — the lookup is
+          privacy-minimised on purpose and this screen keeps it that way (§20).
+        */}
+        <dl className="grid grid-cols-2 gap-4 rounded-md bg-surface-muted p-4">
+          <div>
+            <dt className="text-small text-ink-subtle">About to use</dt>
+            <dd className="mt-0.5 text-body-lg font-medium text-ink">
+              Session {context.nextSessionOrdinal}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-small text-ink-subtle">Remaining now</dt>
+            <dd className="mt-0.5 text-body-lg font-medium text-ink">
+              {context.remainingSessions}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-small text-ink-subtle">Already used</dt>
+            <dd className="mt-0.5 text-body text-ink">{context.usedSessions}</dd>
+          </div>
+          <div>
+            <dt className="text-small text-ink-subtle">Code valid until</dt>
+            <dd className="mt-0.5 text-body text-ink">
+              {formatDateTime(context.referenceExpiresAt ?? context.challengeExpiresAt)}
+            </dd>
+          </div>
+          {/*
+            Pass status and its expiry, straight from the lookup.
+            
+            The backend only returns this shape for an ACTIVE pass, so the
+            status is not a warning here — it is the provider's confirmation
+            that the thing they are about to charge against is in good standing.
+            The expiry matters more: a pass valid until next week and one valid
+            until tonight look identical without it.
+          */}
+          <div>
+            <dt className="text-small text-ink-subtle">Pass status</dt>
+            <dd className="mt-0.5 text-body text-ink">{PASS_STATUS_COPY[context.passStatus]}</dd>
+          </div>
+          <div>
+            <dt className="text-small text-ink-subtle">Pass valid until</dt>
+            <dd className="mt-0.5 text-body text-ink">
+              {context.passExpiresAt ? formatDateTime(context.passExpiresAt) : 'No expiry'}
+            </dd>
+          </div>
+        </dl>
 
         <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
-          <Button variant="ghost" onClick={reset} disabled={state.kind === 'COMPLETING'}>
+          <Button variant="ghost" onClick={reset} disabled={busy}>
             Cancel
           </Button>
-          <Button onClick={() => void confirm()} loading={state.kind === 'COMPLETING'}>
+          {/* Explicit, and never triggered by the scanner itself (§22). */}
+          <Button onClick={() => void confirm()} loading={busy} disabled={busy}>
             Confirm session
           </Button>
         </div>
@@ -178,7 +237,7 @@ function RedeemFlow() {
     <div className="space-y-5">
       {state.kind === 'REJECTED' ? (
         <Alert tone="warning" icon={<XCircle />} title="That code wasn't accepted">
-          {state.reason} Ask the customer to generate a new one.
+          {state.reason}
         </Alert>
       ) : null}
 
@@ -216,7 +275,10 @@ function RedeemFlow() {
             void lookup(code)
           }}
         >
-          <Field label="Session code" hint="The code shown on the customer's pass.">
+          <Field
+            label="Session code"
+            hint="Starts with NR1: — the code shown on the customer's pass."
+          >
             {(props) => (
               <Input
                 {...props}
@@ -224,19 +286,24 @@ function RedeemFlow() {
                 onChange={(event) => setCode(event.target.value)}
                 autoComplete="off"
                 spellCheck={false}
-                placeholder="NP:…"
+                placeholder="NR1:…"
               />
             )}
           </Field>
           <Button
             type="submit"
-            disabled={!code.trim()}
+            // Shape only. A well-formed code is not a valid one — expiry,
+            // authorisation, ownership and single use are all invisible in the
+            // string, and all decided by the backend (§37).
+            disabled={!looksLikeRedemptionReference(code)}
             loading={state.kind === 'LOOKING_UP'}
           >
             Look up code
           </Button>
         </form>
       </Card>
+
+      <RecentRedemptions />
 
       <p className="text-small text-ink-subtle">
         Sessions can only be used through a valid, unexpired code. You can't change a
@@ -246,6 +313,46 @@ function RedeemFlow() {
         </Link>
       </p>
     </div>
+  )
+}
+
+/**
+ * The sessions this provider has actually redeemed.
+ *
+ * Real rows from the backend, newest first — no counts, no charts, no
+ * "sessions this week". The contract returns consumed redemptions and nothing
+ * else, so inventing a metric on top would be inventing data (§39).
+ *
+ * `ownerWallet` is the one identifying field the history carries, and it is
+ * shown truncated: the provider needs to recognise a returning customer, not to
+ * hold their address.
+ */
+function RecentRedemptions() {
+  const history = useProviderRedemptions()
+
+  if (history.isPending || history.isError) return null
+  const items = history.data ?? []
+  if (items.length === 0) return null
+
+  return (
+    <Card className="space-y-4 p-6">
+      <h2 className="text-h3 text-ink">Recently redeemed</h2>
+      <ul className="space-y-3">
+        {items.slice(0, 10).map((item) => (
+          <li key={item.redemptionId} className="flex items-baseline justify-between gap-4">
+            <span className="min-w-0 text-body text-ink">
+              Session {item.sessionOrdinal}
+              <span className="ml-2 font-mono text-micro text-ink-subtle">
+                {shortenAddress(item.ownerWallet)}
+              </span>
+            </span>
+            <span className="shrink-0 text-small text-ink-subtle">
+              {formatDateTime(item.redeemedAt)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Card>
   )
 }
 
@@ -321,6 +428,14 @@ function ScannerPanel({
       )}
     </>
   )
+}
+
+/** Pass status in the provider's words, never the raw enum. */
+const PASS_STATUS_COPY: Record<string, string> = {
+  ACTIVE: 'Active',
+  COMPLETED: 'Completed',
+  EXPIRED: 'Expired',
+  CANCELLED: 'Cancelled',
 }
 
 /** Null where there is nothing worth saying yet. */

@@ -137,4 +137,55 @@ describe('native approval serialisation', () => {
     release.listAccounts?.([])
     await accounts.catch(() => {})
   })
+
+  /*
+   * Redemption signing joins the same queue (§45 of Milestone 4B).
+   *
+   * Three things now open native dialogs — sign-in, payment and redemption
+   * authorisation — and they run on the same screens minutes apart. Stacked
+   * approval sheets destroy informed consent: a customer who is shown two
+   * prompts cannot tell which one they are answering, and the one they dismiss
+   * is not necessarily the one they meant to.
+   */
+  it('refuses a redemption signature while a payment approval is open', async () => {
+    const { provider, release } = pendingProvider()
+    init.mockResolvedValue(provider)
+
+    const { initNimiq, sendBasicTransactionWithData, signMessage } = await loadAdapter()
+    await initNimiq({ timeoutMs: 50 })
+
+    // A payment sheet is open and unanswered.
+    const payment = sendBasicTransactionWithData({ recipient: 'NQ07', value: 1, data: 'NP1:x' })
+    await Promise.resolve()
+
+    // The customer opens a pass in another tab and tries to redeem.
+    await expect(signMessage('NIMPASS\nPurpose: AUTHORIZE_REDEMPTION')).rejects.toMatchObject({
+      kind: 'WALLET_BUSY',
+    })
+    expect(provider.sign).not.toHaveBeenCalled()
+
+    release.sendBasicTransactionWithData?.('a'.repeat(64))
+    await expect(payment).resolves.toHaveLength(64)
+  })
+
+  it('refuses a payment while a redemption signature is open', async () => {
+    // The same rule in the other direction: whichever dialog opened first owns
+    // the wallet until the user answers it.
+    const { provider, release } = pendingProvider()
+    init.mockResolvedValue(provider)
+
+    const { initNimiq, sendBasicTransactionWithData, signMessage } = await loadAdapter()
+    await initNimiq({ timeoutMs: 50 })
+
+    const signing = signMessage('NIMPASS\nPurpose: AUTHORIZE_REDEMPTION')
+    await Promise.resolve()
+
+    await expect(
+      sendBasicTransactionWithData({ recipient: 'NQ07', value: 1, data: 'NP1:x' }),
+    ).rejects.toMatchObject({ kind: 'WALLET_BUSY' })
+    expect(provider.sendBasicTransactionWithData).not.toHaveBeenCalled()
+
+    release.sign?.({ publicKey: 'ab'.repeat(32), signature: 'cd'.repeat(64) })
+    await expect(signing).resolves.toMatchObject({ publicKey: 'ab'.repeat(32) })
+  })
 })
