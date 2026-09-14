@@ -23,7 +23,16 @@ func NewRouter(pool *pgxpool.Pool, logger *slog.Logger) http.Handler {
 
 func NewRouterWithConfig(pool *pgxpool.Pool, logger *slog.Logger, cfg config.Config) http.Handler {
 	r := chi.NewRouter()
+	r.Use(sanitizeRequestID)
 	r.Use(middleware.RequestID)
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if requestID := middleware.GetReqID(req.Context()); requestID != "" {
+				w.Header().Set(middleware.RequestIDHeader, requestID)
+			}
+			next.ServeHTTP(w, req)
+		})
+	})
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			started := time.Now()
@@ -32,13 +41,19 @@ func NewRouterWithConfig(pool *pgxpool.Pool, logger *slog.Logger, cfg config.Con
 			logger.Info("request", "request_id", middleware.GetReqID(req.Context()), "method", req.Method, "path", req.URL.Path, "status", wrapped.Status(), "duration_ms", time.Since(started).Milliseconds())
 		})
 	})
-	h := &handler{auth: application.Auth{Store: database.AuthRepository{Pool: pool}, Verifier: nimiq.Ed25519Verifier{}, Network: cfg.Network, Environment: cfg.Environment, Now: time.Now}, catalog: application.Catalog{Store: database.CatalogRepository{Pool: pool}, Now: time.Now}, payments: application.Payments{Store: database.PaymentRepository{Pool: pool}, Chain: nimiq.NewRPCClient(cfg.RPCURL), Network: domain.NimiqNetwork(cfg.Network), Now: time.Now}, cfg: cfg, limits: newLimiter()}
+	h := &handler{auth: application.Auth{Store: database.AuthRepository{Pool: pool}, Verifier: nimiq.Ed25519Verifier{}, Network: cfg.Network, Environment: cfg.Environment, Now: time.Now}, catalog: application.Catalog{Store: database.CatalogRepository{Pool: pool}, Now: time.Now}, payments: application.Payments{Store: database.PaymentRepository{Pool: pool}, Chain: nimiq.NewRPCClient(cfg.RPCURL), Network: domain.NimiqNetwork(cfg.Network), Now: time.Now}, redemptions: application.Redemptions{Store: database.PaymentRepository{Pool: pool}, Passes: database.PaymentRepository{Pool: pool}, Verifier: nimiq.Ed25519Verifier{}, Network: domain.NimiqNetwork(cfg.Network), Environment: cfg.Environment, Now: time.Now}, cfg: cfg, limits: newLimiter()}
 	r.Use(h.originAndCORS)
 	r.Use(recoverer(logger))
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.Header().Set("Referrer-Policy", "no-referrer")
+			w.Header().Set("X-Frame-Options", "DENY")
+			w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
+			w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+			if cfg.Environment == "production" {
+				w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+			}
 			w.Header().Set("Cache-Control", "no-store")
 			next.ServeHTTP(w, req)
 		})
@@ -92,6 +107,14 @@ func NewRouterWithConfig(pool *pgxpool.Pool, logger *slog.Logger, cfg config.Con
 			private.Post("/purchases/{purchaseID}/reconcile", h.reconcilePurchase)
 			private.Post("/purchases/{purchaseID}/cancel", h.cancelPurchase)
 			private.Get("/passes/{passID}", h.getPass)
+			private.Post("/passes/{passID}/redemption-challenges", h.createRedemptionChallenge)
+			private.Get("/passes/{passID}/redemption-challenges/current", h.currentRedemptionChallenge)
+			private.Get("/passes/{passID}/redemptions", h.listPassRedemptions)
+			private.Get("/redemption-challenges/{challengeID}", h.getRedemptionChallenge)
+			private.Post("/redemption-challenges/{challengeID}/authorization", h.authorizeRedemption)
+			private.Post("/providers/{providerID}/redemptions/lookup", h.lookupRedemption)
+			private.Post("/providers/{providerID}/redemptions/confirm", h.confirmRedemption)
+			private.Get("/providers/{providerID}/redemptions", h.listProviderRedemptions)
 		})
 	})
 	r.NotFound(func(w http.ResponseWriter, req *http.Request) {

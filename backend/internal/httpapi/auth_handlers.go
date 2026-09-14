@@ -35,7 +35,7 @@ func (h *handler) createLoginChallenge(w http.ResponseWriter, r *http.Request) {
 		apiFailure(w, r, 400, "VALIDATION_ERROR", "Invalid Nimiq wallet")
 		return
 	}
-	if !h.limits.Allow("challenge-ip:"+remoteIP(r), 20, 5*time.Minute) || !h.limits.Allow("challenge-wallet:"+wallet, 10, 5*time.Minute) {
+	if !h.limits.Allow("challenge-ip:"+h.clientIP(r), 20, 5*time.Minute) || !h.limits.Allow("challenge-wallet:"+wallet, 10, 5*time.Minute) {
 		apiFailure(w, r, 429, "RATE_LIMITED", "Too many challenges")
 		return
 	}
@@ -78,7 +78,7 @@ func identityDTO(i application.Identity) any {
 }
 
 func (h *handler) completeLogin(w http.ResponseWriter, r *http.Request) {
-	if !h.limits.Allow("verify-ip:"+remoteIP(r), 40, 5*time.Minute) {
+	if !h.limits.Allow("verify-ip:"+h.clientIP(r), 40, 5*time.Minute) {
 		apiFailure(w, r, 429, "RATE_LIMITED", "Too many attempts")
 		return
 	}
@@ -132,7 +132,7 @@ func (h *handler) createPayoutChallenge(w http.ResponseWriter, r *http.Request) 
 		apiFailure(w, r, 400, "VALIDATION_ERROR", "Invalid Nimiq wallet")
 		return
 	}
-	if !h.limits.Allow("payout-ip:"+remoteIP(r), 20, 5*time.Minute) || !h.limits.Allow("payout-provider:"+string(providerID), 10, 5*time.Minute) {
+	if !h.limits.Allow("payout-ip:"+h.clientIP(r), 20, 5*time.Minute) || !h.limits.Allow("payout-provider:"+string(providerID), 10, 5*time.Minute) {
 		apiFailure(w, r, 429, "RATE_LIMITED", "Too many challenges")
 		return
 	}
@@ -153,7 +153,7 @@ func (h *handler) verifyPayout(w http.ResponseWriter, r *http.Request) {
 		mappedError(w, r, err)
 		return
 	}
-	if !h.limits.Allow("payout-verify-ip:"+remoteIP(r), 40, 5*time.Minute) {
+	if !h.limits.Allow("payout-verify-ip:"+h.clientIP(r), 40, 5*time.Minute) {
 		apiFailure(w, r, 429, "RATE_LIMITED", "Too many attempts")
 		return
 	}

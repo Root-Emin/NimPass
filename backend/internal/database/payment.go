@@ -422,6 +422,11 @@ func (r PaymentRepository) Cancel(ctx context.Context, id, customer domain.ID, n
 
 func (r PaymentRepository) GetPass(ctx context.Context, id, customer domain.ID) (domain.Pass, error) {
 	var p domain.Pass
+	// Expiration is enforced during redemption as well; persist the visible Pass
+	// state when its owner reads it so an expired entitlement is not shown ACTIVE.
+	if _, err := r.Pool.Exec(ctx, `UPDATE passes pa SET status='EXPIRED' FROM purchases pu WHERE pa.id=$1 AND pa.purchase_id=pu.id AND pu.customer_context_id=$2 AND pa.owner_wallet=pu.expected_wallet AND pa.status='ACTIVE' AND pa.expires_at<=now()`, id, customer); err != nil {
+		return p, err
+	}
 	err := r.Pool.QueryRow(ctx, `SELECT pa.id,pa.purchase_id,pa.owner_wallet,pa.package_id,pa.provider_id,pa.service_id,pa.package_title_snapshot,pa.service_name_snapshot,pa.provider_name_snapshot,pa.price_luna_snapshot,pa.original_sessions,pa.used_sessions,pa.remaining_sessions,pa.status,pa.created_at,pa.expires_at,pa.completed_at FROM passes pa JOIN purchases pu ON pu.id=pa.purchase_id WHERE pa.id=$1 AND pu.customer_context_id=$2 AND pa.owner_wallet=pu.expected_wallet`, id, customer).Scan(&p.ID, &p.PurchaseID, &p.OwnerWallet, &p.Snapshot.PackageID, &p.Snapshot.ProviderID, &p.Snapshot.ServiceID, &p.Snapshot.PackageTitle, &p.Snapshot.ServiceName, &p.Snapshot.ProviderName, &p.Snapshot.PriceLuna, &p.OriginalSessions, &p.UsedSessions, &p.RemainingSessions, &p.Status, &p.CreatedAt, &p.ExpiresAt, &p.CompletedAt)
 	return p, notFound(err)
 }

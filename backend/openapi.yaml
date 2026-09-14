@@ -329,6 +329,106 @@ paths:
       responses:
         '200': { description: Own Pass, content: { application/json: { schema: { $ref: '#/components/schemas/Pass' } } } }
         '404': { $ref: '#/components/responses/Error' }
+  /passes/{passID}/redemption-challenges:
+    parameters: [ { $ref: '#/components/parameters/PassID' } ]
+    post:
+      summary: Create or rotate the current customer redemption challenge
+      operationId: createRedemptionChallenge
+      description: Creates a five-minute, Pass/provider/customer-bound challenge. A fresh challenge contains the exact canonical message to sign. An authorized challenge may rotate its opaque NR1 reference; the previous reference is invalidated. Creating a challenge never consumes a session.
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      responses:
+        '200': { description: Current or newly created challenge, content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionChallenge' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '410': { $ref: '#/components/responses/Error' }
+  /passes/{passID}/redemption-challenges/current:
+    parameters: [ { $ref: '#/components/parameters/PassID' } ]
+    get:
+      summary: Recover the current customer redemption challenge
+      operationId: getCurrentRedemptionChallenge
+      description: Returns the current challenge state without returning the bearer QR reference. Use POST to create or rotate a usable reference after authorization.
+      responses:
+        '200': { description: Current challenge state, content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionChallenge' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /passes/{passID}/redemptions:
+    parameters: [ { $ref: '#/components/parameters/PassID' } ]
+    get:
+      summary: List own Pass redemption history
+      operationId: listPassRedemptions
+      responses:
+        '200': { description: Customer-owned redemption history, content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionHistory' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /redemption-challenges/{challengeID}:
+    parameters: [ { $ref: '#/components/parameters/ChallengeID' } ]
+    get:
+      summary: Get own redemption challenge state
+      operationId: getRedemptionChallenge
+      responses:
+        '200': { description: Customer-owned challenge, content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionChallenge' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /redemption-challenges/{challengeID}/authorization:
+    parameters: [ { $ref: '#/components/parameters/ChallengeID' } ]
+    post:
+      summary: Authorize a redemption challenge with the customer wallet
+      operationId: authorizeRedemption
+      description: Verifies one fresh Nimiq Pay AUTHORIZE_REDEMPTION signature over the server-authored canonical message. Successful authorization creates no session effect; it only makes the short-lived NR1 reference usable by the bound provider.
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionAuthorization' } } }
+      responses:
+        '200': { description: Authorized challenge with one opaque bearer reference, content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionChallenge' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '410': { $ref: '#/components/responses/Error' }
+  /providers/{providerID}/redemptions:
+    parameters: [ { $ref: '#/components/parameters/ProviderID' } ]
+    get:
+      summary: List redemption history for an owned Provider
+      operationId: listProviderRedemptions
+      responses:
+        '200': { description: Provider-owned operational history, content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionHistory' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /providers/{providerID}/redemptions/lookup:
+    parameters: [ { $ref: '#/components/parameters/ProviderID' } ]
+    post:
+      summary: Look up an authorized redemption without consuming it
+      operationId: lookupRedemption
+      description: Provider authentication and Provider ownership are required. This lookup validates the opaque reference, expiry, authorization, Pass binding and stale context, but never consumes a session or creates a Redemption.
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionConfirmation' } } }
+      responses:
+        '200': { description: Safe redemption context for explicit provider confirmation, content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionLookup' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '410': { $ref: '#/components/responses/Error' }
+  /providers/{providerID}/redemptions/confirm:
+    parameters: [ { $ref: '#/components/parameters/ProviderID' } ]
+    post:
+      summary: Confirm an authorized customer redemption
+      operationId: confirmRedemption
+      description: 'Provider authentication is required. The opaque reference is not sufficient by itself: the backend also enforces Provider ownership, challenge authorization, challenge/pass binding, expiry, stale context and one-session atomic consumption.'
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionConfirmation' } } }
+      responses:
+        '200': { description: One consumed session and authoritative remaining count, content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionConfirmationResult' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '410': { $ref: '#/components/responses/Error' }
 components:
   securitySchemes:
     sessionCookie:
@@ -343,10 +443,11 @@ components:
     PackageID: { in: path, name: packageID, required: true, schema: { type: string, format: uuid } }
     PurchaseID: { in: path, name: purchaseID, required: true, schema: { type: string, format: uuid } }
     PassID: { in: path, name: passID, required: true, schema: { type: string, format: uuid } }
+    ChallengeID: { in: path, name: challengeID, required: true, schema: { type: string, format: uuid } }
     IdempotencyKey: { in: header, name: Idempotency-Key, required: false, schema: { type: string, minLength: 1, maxLength: 128 } }
   responses:
     Error:
-      description: Normalized error; codes include AUTH_REQUIRED, INVALID_SIGNATURE, CHALLENGE_EXPIRED, CHALLENGE_CONSUMED, FORBIDDEN, VALIDATION_ERROR, NOT_FOUND, CONFLICT, PAYMENT_CONFLICT, PACKAGE_PURCHASE_CUTOFF, INTENT_EXPIRED, RATE_LIMITED, CSRF_INVALID, ORIGIN_FORBIDDEN.
+      description: Normalized error; codes include AUTH_REQUIRED, INVALID_SIGNATURE, CHALLENGE_EXPIRED, CHALLENGE_CONSUMED, FORBIDDEN, VALIDATION_ERROR, NOT_FOUND, CONFLICT, PAYMENT_CONFLICT, PACKAGE_PURCHASE_CUTOFF, INTENT_EXPIRED, PASS_NOT_FOUND, PASS_NOT_OWNED, PASS_EXPIRED, PASS_COMPLETED, REDEMPTION_CHALLENGE_EXPIRED, REDEMPTION_ALREADY_CONSUMED, REDEMPTION_NOT_AUTHORIZED, INVALID_REDEMPTION_SIGNATURE, STALE_REDEMPTION_CHALLENGE, INVALID_REDEMPTION_TOKEN, RATE_LIMITED, CSRF_INVALID, ORIGIN_FORBIDDEN.
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
   schemas:
     CreatePurchase:
@@ -435,6 +536,86 @@ components:
         wallet: { type: string }
         message: { type: string, description: Sign this exact UTF-8 string; do not reconstruct it. }
         expiresAt: { type: string, format: date-time }
+    RedemptionAuthorization:
+      type: object
+      additionalProperties: false
+      required: [publicKey, signature]
+      properties:
+        publicKey: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
+        signature: { type: string, pattern: '^[0-9a-fA-F]{128}$' }
+    RedemptionConfirmation:
+      type: object
+      additionalProperties: false
+      required: [redemptionReference]
+      properties:
+        redemptionReference: { type: string, pattern: '^NR1:[0-9a-f]{64}$', description: Opaque short-lived bearer reference returned only after customer signature authorization. }
+    RedemptionLookup:
+      type: object
+      additionalProperties: false
+      required: [challengeId, passId, providerId, serviceName, packageTitle, challengeStatus, authorizationStatus, passStatus, usedSessions, remainingSessions, nextSessionOrdinal, passExpiresAt, challengeExpiresAt, referenceExpiresAt]
+      properties:
+        challengeId: { type: string, format: uuid }
+        passId: { type: string, format: uuid }
+        providerId: { type: string, format: uuid }
+        serviceName: { type: string }
+        packageTitle: { type: string }
+        challengeStatus: { type: string, enum: [AUTHORIZED] }
+        authorizationStatus: { type: string, enum: [AUTHORIZED] }
+        passStatus: { type: string, enum: [ACTIVE] }
+        usedSessions: { type: integer, minimum: 0 }
+        remainingSessions: { type: integer, minimum: 1 }
+        nextSessionOrdinal: { type: integer, minimum: 1 }
+        passExpiresAt: { type: string, format: date-time, nullable: true }
+        challengeExpiresAt: { type: string, format: date-time }
+        referenceExpiresAt: { type: string, format: date-time, nullable: true }
+    RedemptionChallenge:
+      type: object
+      required: [challengeId, passId, providerId, purpose, status, message, createdAt, expiresAt, authorizedAt, consumedAt, pass, redemption, redemptionReference, qrExpiresAt]
+      properties:
+        challengeId: { type: string, format: uuid }
+        passId: { type: string, format: uuid }
+        providerId: { type: string, format: uuid }
+        purpose: { type: string, enum: [AUTHORIZE_REDEMPTION] }
+        status: { type: string, enum: [CREATED, AUTHORIZED, CONSUMED, EXPIRED, CANCELLED] }
+        message: { type: string, description: Exact canonical message to pass to Nimiq Pay sign(). }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        authorizedAt: { type: string, format: date-time, nullable: true }
+        consumedAt: { type: string, format: date-time, nullable: true }
+        pass: { type: object, required: [status, originalSessions, usedSessions, remainingSessions, expiresAt], properties: { status: { type: string, enum: [ACTIVE, COMPLETED, EXPIRED, CANCELLED] }, originalSessions: { type: integer }, usedSessions: { type: integer }, remainingSessions: { type: integer }, expiresAt: { type: string, format: date-time, nullable: true } } }
+        redemption: { type: object, nullable: true, properties: { id: { type: string, format: uuid }, sessionOrdinal: { type: integer }, redeemedAt: { type: string, format: date-time } } }
+        redemptionReference: { type: string, pattern: '^NR1:[0-9a-f]{64}$', nullable: true, description: Present only in the authorization response or challenge rotation response. }
+        qrExpiresAt: { type: string, format: date-time, nullable: true }
+    RedemptionHistory:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/RedemptionHistoryItem' } }
+    RedemptionHistoryItem:
+      type: object
+      required: [redemptionId, challengeId, passId, providerId, serviceId, packageId, sessionOrdinal, ownerWallet, redeemedAt, status]
+      properties:
+        redemptionId: { type: string, format: uuid }
+        challengeId: { type: string, format: uuid }
+        passId: { type: string, format: uuid }
+        providerId: { type: string, format: uuid }
+        serviceId: { type: string, format: uuid }
+        packageId: { type: string, format: uuid }
+        sessionOrdinal: { type: integer, minimum: 1 }
+        ownerWallet: { type: string }
+        redeemedAt: { type: string, format: date-time }
+        status: { type: string, enum: [CONSUMED] }
+    RedemptionConfirmationResult:
+      type: object
+      required: [redemptionId, passId, redeemedAt, usedSessions, remainingSessions, passStatus, completed]
+      properties:
+        redemptionId: { type: string, format: uuid }
+        passId: { type: string, format: uuid }
+        redeemedAt: { type: string, format: date-time }
+        usedSessions: { type: integer }
+        remainingSessions: { type: integer }
+        passStatus: { type: string, enum: [ACTIVE, COMPLETED, EXPIRED, CANCELLED] }
+        completed: { type: boolean }
     Proof:
       type: object
       additionalProperties: false

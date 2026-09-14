@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,12 +51,32 @@ func TestCoreMigrationConstraints(t *testing.T) {
 	if err := Migrate(ctx, pool, "../../migrations"); err != nil {
 		t.Fatal(err)
 	}
+	var migrationWG sync.WaitGroup
+	migrationErrors := make(chan error, 8)
+	for range 8 {
+		migrationWG.Add(1)
+		go func() {
+			defer migrationWG.Done()
+			migrationErrors <- Migrate(ctx, pool, "../../migrations")
+		}()
+	}
+	migrationWG.Wait()
+	close(migrationErrors)
+	for migrationErr := range migrationErrors {
+		if migrationErr != nil {
+			t.Fatalf("concurrent migration: %v", migrationErr)
+		}
+	}
 	if err := Migrate(ctx, pool, "../../migrations"); err != nil {
 		t.Fatalf("migration not idempotent: %v", err)
 	}
 	var migrationCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM schema_migrations").Scan(&migrationCount); err != nil || migrationCount != 4 {
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM schema_migrations").Scan(&migrationCount); err != nil || migrationCount != 6 {
 		t.Fatalf("migration history count=%d err=%v", migrationCount, err)
+	}
+	var dueIndex bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname=current_schema() AND indexname='payment_candidates_due_idx')`).Scan(&dueIndex); err != nil || !dueIndex {
+		t.Fatalf("reconciliation due index missing: %v", err)
 	}
 
 	now := time.Now().UTC()

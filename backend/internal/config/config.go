@@ -10,14 +10,15 @@ import (
 )
 
 type Config struct {
-	Environment  string
-	HTTPAddress  string
-	DatabaseURL  string
-	Network      string
-	RPCURL       string
-	PublicOrigin string
-	CookieSecure bool
-	CookieMode   string
+	Environment       string
+	HTTPAddress       string
+	DatabaseURL       string
+	Network           string
+	RPCURL            string
+	PublicOrigin      string
+	CookieSecure      bool
+	CookieMode        string
+	TrustedProxyCIDRs []string
 }
 
 func Load() (Config, error) {
@@ -26,13 +27,14 @@ func Load() (Config, error) {
 
 func Parse(getenv func(string) string) (Config, error) {
 	c := Config{
-		Environment:  fallback(getenv("APP_ENV"), "development"),
-		HTTPAddress:  fallback(getenv("HTTP_ADDR"), ":8080"),
-		DatabaseURL:  strings.TrimSpace(getenv("DATABASE_URL")),
-		Network:      fallback(getenv("NIMIQ_NETWORK"), "TESTNET"),
-		RPCURL:       strings.TrimSpace(getenv("NIMIQ_RPC_URL")),
-		PublicOrigin: strings.TrimRight(strings.TrimSpace(getenv("PUBLIC_ORIGIN")), "/"),
-		CookieMode:   fallback(getenv("SESSION_COOKIE_MODE"), "secure"),
+		Environment:       strings.TrimSpace(getenv("APP_ENV")),
+		HTTPAddress:       fallback(getenv("HTTP_ADDR"), ":8080"),
+		DatabaseURL:       strings.TrimSpace(getenv("DATABASE_URL")),
+		Network:           strings.TrimSpace(getenv("NIMIQ_NETWORK")),
+		RPCURL:            strings.TrimSpace(getenv("NIMIQ_RPC_URL")),
+		PublicOrigin:      strings.TrimRight(strings.TrimSpace(getenv("PUBLIC_ORIGIN")), "/"),
+		CookieMode:        fallback(getenv("SESSION_COOKIE_MODE"), "secure"),
+		TrustedProxyCIDRs: splitList(getenv("TRUSTED_PROXY_CIDRS")),
 	}
 	if c.Environment != "development" && c.Environment != "test" && c.Environment != "production" {
 		return Config{}, fmt.Errorf("APP_ENV must be development, test or production")
@@ -81,6 +83,11 @@ func Parse(getenv func(string) string) (Config, error) {
 	if c.CookieMode == "local-insecure" && (c.Environment == "production" || origin.Scheme != "http") {
 		return Config{}, errors.New("local-insecure cookies require non-production HTTP origin")
 	}
+	for _, cidr := range c.TrustedProxyCIDRs {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return Config{}, fmt.Errorf("TRUSTED_PROXY_CIDRS contains invalid CIDR %q", cidr)
+		}
+	}
 	c.CookieSecure = c.CookieMode == "secure"
 	return c, nil
 }
@@ -90,4 +97,15 @@ func fallback(value, defaultValue string) string {
 		return defaultValue
 	}
 	return strings.TrimSpace(value)
+}
+
+func splitList(value string) []string {
+	var result []string
+	for _, item := range strings.Split(value, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			result = append(result, item)
+		}
+	}
+	return result
 }

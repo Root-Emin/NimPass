@@ -129,3 +129,58 @@ func TestChallengeFlooding(t *testing.T) {
 		}
 	}
 }
+
+func TestClientIPTrustBoundary(t *testing.T) {
+	h := &handler{cfg: config.Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}}}
+	request := func(remote, forwarded string) *http.Request {
+		req := httptest.NewRequest(http.MethodGet, "http://api.local/", nil)
+		req.RemoteAddr = remote
+		req.Header.Set("X-Forwarded-For", forwarded)
+		return req
+	}
+	if got := h.clientIP(request("192.0.2.10:12345", "198.51.100.10")); got != "192.0.2.10" {
+		t.Fatalf("untrusted peer accepted spoofed XFF: %s", got)
+	}
+	if got := h.clientIP(request("10.0.0.5:12345", "198.51.100.10, 10.0.0.6")); got != "198.51.100.10" {
+		t.Fatalf("trusted proxy client=%s", got)
+	}
+	if got := h.clientIP(request("10.0.0.5:12345", "198.51.100.10, 203.0.113.9, 10.0.0.6")); got != "203.0.113.9" {
+		t.Fatalf("multiple proxy client=%s", got)
+	}
+	if got := h.clientIP(request("10.0.0.5:12345", "malformed, 10.0.0.6")); got != "10.0.0.5" {
+		t.Fatalf("malformed XFF accepted: %s", got)
+	}
+}
+
+func TestJSONBodyLimit(t *testing.T) {
+	h := &handler{auth: application.Auth{Store: &testAuthStore{}, Network: "TESTNET", Environment: "test", Now: time.Now}, cfg: config.Config{PublicOrigin: "http://localhost:5173"}, limits: newLimiter()}
+	body := `{"wallet":"` + strings.Repeat("a", 40<<10) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "http://api.local/api/v1/auth/challenges", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	h.createLoginChallenge(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("oversized JSON status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestCredentialedCORSPreflightIsExactOriginOnly(t *testing.T) {
+	h := &handler{cfg: config.Config{PublicOrigin: "https://app.example"}}
+	preflight := h.originAndCORS(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { t.Fatal("preflight reached handler") }))
+	run := func(origin string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodOptions, "https://api.example/api/v1/passes", nil)
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+		rr := httptest.NewRecorder()
+		preflight.ServeHTTP(rr, req)
+		return rr
+	}
+	allowed := run("https://app.example")
+	if allowed.Code != http.StatusNoContent || allowed.Header().Get("Access-Control-Allow-Origin") != "https://app.example" || allowed.Header().Get("Access-Control-Allow-Credentials") != "true" {
+		t.Fatalf("allowed preflight: status=%d headers=%v", allowed.Code, allowed.Header())
+	}
+	denied := run("https://evil.example")
+	if denied.Code != http.StatusForbidden || denied.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("denied preflight: status=%d headers=%v", denied.Code, denied.Header())
+	}
+}

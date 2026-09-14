@@ -21,11 +21,12 @@ import (
 )
 
 type handler struct {
-	auth     application.Auth
-	catalog  application.Catalog
-	payments application.Payments
-	cfg      config.Config
-	limits   *limiter
+	auth        application.Auth
+	catalog     application.Catalog
+	payments    application.Payments
+	redemptions application.Redemptions
+	cfg         config.Config
+	limits      *limiter
 }
 
 type sessionKey struct{}
@@ -73,6 +74,28 @@ func (h *handler) originAndCORS(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func sanitizeRequestID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		value := r.Header.Get(middleware.RequestIDHeader)
+		if !safeRequestID(value) {
+			r.Header.Del(middleware.RequestIDHeader)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func safeRequestID(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, char := range value {
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && !strings.ContainsRune("-_.:/", char) {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *handler) requireSession(next http.Handler) http.Handler {
@@ -148,6 +171,26 @@ func mappedError(w http.ResponseWriter, r *http.Request, err error) {
 		apiFailure(w, r, 403, "FORBIDDEN", "Not authorized")
 	case errors.Is(err, application.ErrConflict):
 		apiFailure(w, r, 409, "CONFLICT", "Invalid state transition")
+	case errors.Is(err, application.ErrPassNotFound):
+		apiFailure(w, r, 404, "PASS_NOT_FOUND", "Pass not found")
+	case errors.Is(err, application.ErrPassNotOwned):
+		apiFailure(w, r, 403, "PASS_NOT_OWNED", "Pass is not owned by this wallet")
+	case errors.Is(err, application.ErrPassExpired):
+		apiFailure(w, r, 410, "PASS_EXPIRED", "Pass expired")
+	case errors.Is(err, application.ErrPassCompleted):
+		apiFailure(w, r, 409, "PASS_COMPLETED", "Pass is completed")
+	case errors.Is(err, application.ErrRedemptionChallengeExpired):
+		apiFailure(w, r, 410, "REDEMPTION_CHALLENGE_EXPIRED", "Redemption challenge expired")
+	case errors.Is(err, application.ErrRedemptionConsumed):
+		apiFailure(w, r, 409, "REDEMPTION_ALREADY_CONSUMED", "Redemption was already consumed")
+	case errors.Is(err, application.ErrRedemptionNotAuthorized):
+		apiFailure(w, r, 409, "REDEMPTION_NOT_AUTHORIZED", "Redemption is not authorized")
+	case errors.Is(err, application.ErrInvalidRedemptionSignature):
+		apiFailure(w, r, 401, "INVALID_REDEMPTION_SIGNATURE", "Redemption signature invalid")
+	case errors.Is(err, application.ErrStaleRedemptionChallenge):
+		apiFailure(w, r, 409, "STALE_REDEMPTION_CHALLENGE", "Redemption challenge is stale")
+	case errors.Is(err, application.ErrInvalidRedemptionToken):
+		apiFailure(w, r, 404, "INVALID_REDEMPTION_TOKEN", "Invalid redemption reference")
 	case errors.Is(err, application.ErrTooManyAttempts):
 		apiFailure(w, r, 429, "RATE_LIMITED", "Too many attempts")
 	default:
@@ -162,12 +205,46 @@ func parsedID(w http.ResponseWriter, r *http.Request, value string) (domain.ID, 
 	}
 	return id, true
 }
-func remoteIP(r *http.Request) string {
+func (h *handler) clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
 	}
-	return host
+	peer := net.ParseIP(host)
+	if peer == nil {
+		return "unknown"
+	}
+	if !h.isTrustedProxy(peer) {
+		return peer.String()
+	}
+	forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+	if forwarded == "" {
+		return peer.String()
+	}
+	parts := strings.Split(forwarded, ",")
+	parsed := make([]net.IP, len(parts))
+	for i, part := range parts {
+		parsed[i] = net.ParseIP(strings.TrimSpace(part))
+		if parsed[i] == nil {
+			return peer.String()
+		}
+	}
+	for i := len(parsed) - 1; i >= 0; i-- {
+		if !h.isTrustedProxy(parsed[i]) {
+			return parsed[i].String()
+		}
+	}
+	return parsed[0].String()
+}
+
+func (h *handler) isTrustedProxy(ip net.IP) bool {
+	for _, cidr := range h.cfg.TrustedProxyCIDRs {
+		_, network, err := net.ParseCIDR(cidr)
+		if err == nil && network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 type limitEntry struct {
