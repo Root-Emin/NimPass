@@ -23,17 +23,17 @@ Provider
    ↓
 Creates Service
    ↓
-Creates Package
+Creates Pass
    ↓
-Publishes Package
+Publishes Pass
 
 Customer
    ↓
-Views Package
+Views Pass
    ↓
 Pays with NIM
    ↓
-Receives Pass
+Owns Pass
    ↓
 Returns Later
    ↓
@@ -227,7 +227,8 @@ Vite
 Tailwind CSS
 shadcn/ui
 Lucide Icons
-@nimiq/mini-app-sdk
+@nimiq/mini-app-sdk   (wallet inside Nimiq Pay)
+@nimiq/hub-api        (wallet in an ordinary browser)
 ```
 
 ---
@@ -311,7 +312,7 @@ providers
 
 services
 
-packages
+Passes
 
 passes
 
@@ -374,7 +375,7 @@ remaining session balance
 
 redemption success
 
-package historical terms
+Pass historical terms
 
 pass completion
 ```
@@ -393,7 +394,7 @@ Used for:
 
 * public discovery,
 * provider pages,
-* package pages,
+* Pass pages,
 * provider administration,
 * browsing owned state where authenticated appropriately.
 
@@ -484,17 +485,20 @@ Create a dedicated frontend boundary conceptually similar to:
 src/
 └── lib/
     └── nimiq/
-        ├── client.ts
-        ├── provider.ts
-        ├── capabilities.ts
-        ├── errors.ts
-        ├── payments.ts
-        └── signatures.ts
+        ├── transport.ts          the WalletTransport interface
+        ├── mini-app-transport.ts Nimiq Pay implementation
+        ├── hub-transport.ts      Nimiq Hub implementation
+        ├── wallet-runtime.ts     runtime selection
+        ├── client.ts             Mini App SDK access
+        ├── hub-endpoint.ts
+        └── errors.ts
 ```
 
 Exact filenames may evolve.
 
 The architectural boundary must remain.
+
+Runtime selection lives at this boundary and nowhere else. Application code consumes capabilities — connect, sign a challenge, pay, current wallet, availability — and never branches on which wallet answered (§15, §86).
 
 ---
 
@@ -523,11 +527,11 @@ Instead:
 ```text
 UI
  ↓
-Nimiq Adapter
+Wallet abstraction (WalletTransport)
  ↓
-Mini App SDK
- ↓
-Nimiq Pay
+ ├── Nimiq Pay Adapter ── @nimiq/mini-app-sdk ── Nimiq Pay
+ │
+ └── Nimiq Hub Adapter ── @nimiq/hub-api ────── Nimiq Hub
 ```
 
 ---
@@ -599,7 +603,7 @@ provider management
 
 service management
 
-package management
+Pass management
 
 pass lifecycle
 
@@ -653,7 +657,7 @@ backend/
 │   ├── domain/
 │   │   ├── provider/
 │   │   ├── service/
-│   │   ├── package/
+│   │   ├── Pass/
 │   │   ├── pass/
 │   │   ├── purchase/
 │   │   └── redemption/
@@ -661,7 +665,7 @@ backend/
 │   ├── application/
 │   │   ├── provider/
 │   │   ├── service/
-│   │   ├── package/
+│   │   ├── Pass/
 │   │   ├── pass/
 │   │   ├── purchase/
 │   │   └── redemption/
@@ -722,9 +726,9 @@ Examples:
 ```text
 CreateService
 
-CreatePackage
+CreatePass
 
-PublishPackage
+PublishPass
 
 CreatePassFromPurchase
 
@@ -788,7 +792,7 @@ Provider
 
 Service
 
-Package
+Pass
 
 Purchase
 
@@ -1004,9 +1008,9 @@ A service is not directly a purchased pass.
 
 ---
 
-# 33. Package Domain
+# 33. Pass Domain
 
-Package represents a sellable commercial offering.
+Pass represents a sellable commercial offering.
 
 Example:
 
@@ -1049,9 +1053,11 @@ For the initial Nimpass product:
 currency = NIM
 ```
 
+There is no Pass type. The catalog table is `passes`.
+
 ---
 
-# 34. Package Status
+# 34. Pass Status
 
 Potential states:
 
@@ -1065,22 +1071,22 @@ UNAVAILABLE
 ARCHIVED
 ```
 
-Package availability affects new purchases.
+Pass availability affects new purchases.
 
-It must not automatically invalidate existing passes.
+It must not automatically invalidate existing purchased Passes.
 
 ---
 
-# 35. Pass Domain
+# 35. Purchased Pass Domain
 
-Pass represents a purchased customer entitlement.
+Purchased Pass represents a customer's owned copy of a Pass, with independent session progress.
 
 Conceptual fields:
 
 ```text
 id
 
-package_id
+pass_id
 
 provider_id
 
@@ -1107,18 +1113,20 @@ expires_at
 completed_at
 ```
 
+The live table is `purchased_passes`. Customers see this as My Pass. Product language does not introduce a Package type.
+
 ---
 
 # 36. Pass Snapshot Data
 
-Passes must preserve relevant purchase-time package information.
+Purchased Passes must preserve relevant purchase-time Pass information.
 
-Do NOT depend entirely on current package values.
+Do NOT depend entirely on current live Pass values.
 
-A pass may preserve fields such as:
+A purchased Pass may preserve fields such as:
 
 ```text
-package_title_snapshot
+pass_title_snapshot
 
 service_name_snapshot
 
@@ -1133,7 +1141,7 @@ currency_snapshot
 expiration_snapshot
 ```
 
-This prevents historical passes from changing when a provider edits a package.
+This prevents historical purchased Passes from changing when a provider edits the live Pass.
 
 ---
 
@@ -1213,7 +1221,7 @@ customer_identity_id
 
 wallet_address
 
-package_id
+pass_id
 
 amount
 
@@ -1287,7 +1295,7 @@ Do not expose unnecessary complexity to users.
 Conceptually:
 
 ```text
-Customer selects package
+Customer selects Pass
         ↓
 Backend creates purchase intent
         ↓
@@ -1547,7 +1555,7 @@ providers
 
 services
 
-packages
+Passes
 
 purchases
 
@@ -1573,9 +1581,9 @@ Examples:
 ```text
 Provider → Services
 
-Service → Packages
+Service → Passes
 
-Package → Purchases
+Pass → Purchases
 
 Purchase → Pass
 
@@ -1651,7 +1659,7 @@ Internal application events may still exist conceptually.
 Examples:
 
 ```text
-PackagePublished
+PassPublished
 
 PurchaseConfirmed
 
@@ -1683,7 +1691,7 @@ Possible resources:
 
 /api/v1/services
 
-/api/v1/packages
+/api/v1/Passes
 
 /api/v1/purchases
 
@@ -1701,12 +1709,12 @@ Examples:
 ```text
 GET /api/v1/providers/{slug}
 
-GET /api/v1/providers/{slug}/packages
+GET /api/v1/providers/{slug}/Passes
 
-GET /api/v1/packages/{id}
+GET /api/v1/Passes/{id}
 ```
 
-These endpoints power public discovery and package pages.
+These endpoints power public discovery and Pass pages.
 
 ---
 
@@ -1719,11 +1727,11 @@ POST /api/v1/provider/services
 
 PATCH /api/v1/provider/services/{id}
 
-POST /api/v1/provider/packages
+POST /api/v1/provider/Passes
 
-PATCH /api/v1/provider/packages/{id}
+PATCH /api/v1/provider/Passes/{id}
 
-POST /api/v1/provider/packages/{id}/publish
+POST /api/v1/provider/Passes/{id}/publish
 
 GET /api/v1/provider/passes
 ```
@@ -1822,9 +1830,9 @@ Do not expose raw database errors.
 Prefer stable machine-readable errors such as:
 
 ```text
-PACKAGE_NOT_FOUND
+PASS_NOT_FOUND
 
-PACKAGE_UNAVAILABLE
+PASS_UNAVAILABLE
 
 PURCHASE_NOT_FOUND
 
@@ -1872,7 +1880,7 @@ Authenticated
 does not automatically mean:
 
 ```text
-Can edit Alex Fitness package
+Can edit Alex Fitness Pass
 ```
 
 ---
@@ -1892,7 +1900,7 @@ Provider:
 ```text
 may edit own services
 
-may edit own packages
+may edit own Passes
 
 may validate passes belonging to their services
 ```
@@ -1947,7 +1955,7 @@ wallet address
 
 provider id
 
-package id
+Pass id
 
 pass id
 
@@ -1968,7 +1976,7 @@ The backend must derive or verify authoritative values.
 
 # 71. Price Authority
 
-When purchasing package `X`, the frontend should not decide:
+When purchasing Pass `X`, the frontend should not decide:
 
 ```json
 {
@@ -1976,9 +1984,9 @@ When purchasing package `X`, the frontend should not decide:
 }
 ```
 
-and override a package priced at 250 NIM.
+and override a Pass priced at 250 NIM.
 
-The backend loads the current package terms and creates the intended purchase.
+The backend loads the current Pass terms and creates the intended purchase.
 
 ---
 
@@ -1986,7 +1994,7 @@ The backend loads the current package terms and creates the intended purchase.
 
 Once a purchase is created, enough commercial information should be preserved to reconstruct what was purchased.
 
-Do not depend entirely on mutable package state.
+Do not depend entirely on mutable Pass state.
 
 ---
 
@@ -2073,7 +2081,7 @@ src/
 └── api/
     ├── client.ts
     ├── providers.ts
-    ├── packages.ts
+    ├── Passes.ts
     ├── passes.ts
     ├── purchases.ts
     └── redemptions.ts
@@ -2090,7 +2098,7 @@ Remote server state should be treated differently from local UI state.
 Examples of server state:
 
 ```text
-packages
+Passes
 
 passes
 
@@ -2128,7 +2136,7 @@ Recommended conceptual routes:
 
 /providers/:slug
 
-/packages/:id
+/Passes/:id
 
 /passes
 
@@ -2138,7 +2146,7 @@ Recommended conceptual routes:
 
 /provider/services
 
-/provider/packages
+/provider/Passes
 
 /provider/passes
 ```
@@ -2149,14 +2157,14 @@ Exact routes may change with UX refinement.
 
 # 80. Public URLs
 
-Provider and package pages should support shareable URLs.
+Provider and Pass pages should support shareable URLs.
 
 Example concept:
 
 ```text
 /provider/alex-fitness
 
-/package/{id}
+/Pass/{id}
 ```
 
 Prefer readable provider slugs where useful.
@@ -2172,11 +2180,11 @@ Shared links should preserve destination intent.
 Example:
 
 ```text
-Package link
+Pass link
     ↓
 Nimpass opens
     ↓
-Package shown directly
+Pass shown directly
 ```
 
 Do not force users through unrelated homepage flows.
@@ -2195,7 +2203,7 @@ frontend/
 │   ├── components/
 │   │   ├── ui/
 │   │   ├── provider/
-│   │   ├── package/
+│   │   ├── Pass/
 │   │   ├── pass/
 │   │   └── payment/
 │   │
@@ -2209,7 +2217,7 @@ frontend/
 ├── public/
 ├── index.html
 ├── vite.config.ts
-└── package.json
+└── Pass.json
 ```
 
 Do not create excessively deep architecture without need.
@@ -2223,7 +2231,7 @@ Prefer domain-oriented components.
 Examples:
 
 ```text
-PackageCard
+PassCard
 
 ProviderHeader
 
@@ -2294,12 +2302,17 @@ Conceptually:
 type RuntimeCapabilities = {
   nimiqProviderAvailable: boolean
   walletOperationsAvailable: boolean
+  insideNimiqPay: boolean
+  transport: 'mini-app' | 'hub' | null
+  // True when each wallet operation needs its own user gesture, because the
+  // transport opens a browser popup and browsers grant one per activation.
+  gesturePerOperation: boolean
 }
 ```
 
 The actual representation may differ.
 
-The UX can then respond appropriately.
+The UX can then respond appropriately — but only through capabilities. A component that reads `transport` to decide behaviour has crossed the boundary §15 draws.
 
 ---
 
@@ -2313,7 +2326,7 @@ Example:
 
 ```text
 Provider Page
-Package Page
+Pass Page
 Discover
 ```
 
@@ -2323,19 +2336,44 @@ Wallet-required actions should present an appropriate next step rather than a Ja
 
 ---
 
-# 88. No Undocumented Browser Wallet Architecture
+# 88. Browser Wallet Architecture — Nimiq Hub (approved)
 
 Do not implement a separate browser-wallet architecture simply to make desktop payment work unless explicitly approved.
 
-For the competition MVP:
+**This was explicitly approved in September 2026.** Nimpass now supports two wallet transports, one product:
 
 ```text
-Nimiq Pay
+Nimiq Pay WebView   ->  @nimiq/mini-app-sdk   (injected Nimiq provider)
+ordinary browser    ->  @nimiq/hub-api        (the official Nimiq Hub)
 ```
 
-is the authoritative wallet integration environment.
+The original rule was aimed at *unsupported wallet bridges* — invented provider shims, browser extensions, custom key handling. The Nimiq Hub is none of those: it is Nimiq's own first-party wallet interface, documented at `https://nimiq.github.io/hub`, and it keeps the same security boundary Nimiq Pay does. Private keys never enter Nimpass in either runtime (§19).
 
-Do not invent unsupported wallet bridges.
+What did NOT change:
+
+```text
+one authentication model
+one purchase lifecycle
+one set of backend contracts
+one security model
+Nimiq Pay remains the Mini App wallet environment
+```
+
+Nimiq Pay is detected first and always wins, so a Mini App session never sees a Hub window. The Hub only fills the runtime where there previously was no wallet at all.
+
+Still forbidden:
+
+```text
+private-key or seed-phrase handling
+browser extensions as a requirement
+faked provider or wallet state
+a second, parallel business flow for desktop
+treating "Open in Nimiq Pay" as the desktop wallet solution
+```
+
+Restricted Hub account-management methods (`login()`, `signup()`, `onboard()`, `export()`) are not used: a third-party application authenticates with `chooseAddress()` + `signMessage()`.
+
+See `DECISIONS.md` (ADR-001) for the reasoning, the popup-blocker constraint, and the payment-reference decision.
 
 ---
 
@@ -2394,7 +2432,7 @@ Conceptually:
 ```text
 migrations/
 001_initial.sql
-002_packages.sql
+002_Passes.sql
 003_passes.sql
 ...
 ```
@@ -2409,7 +2447,7 @@ Development seed data may exist for:
 
 * demo providers,
 * services,
-* packages.
+* Passes.
 
 Seed data must never masquerade as real production purchases.
 
@@ -2942,9 +2980,9 @@ Test actual customer/provider journeys.
 At minimum, automate or manually verify:
 
 ```text
-package creation
+Pass creation
 
-package loading
+Pass loading
 
 purchase intent creation
 
@@ -3332,9 +3370,9 @@ Public availability may be disabled without destroying historical records.
 
 ---
 
-# 136. Package Deactivation
+# 136. Pass Deactivation
 
-When a provider disables a package:
+When a provider disables a Pass:
 
 ```text
 New purchases
@@ -3538,7 +3576,7 @@ provider_id
 
 service_id
 
-package status
+Pass status
 
 owner identity
 
@@ -3768,7 +3806,9 @@ Icons
 Lucide
 
 Blockchain Integration
-@nimiq/mini-app-sdk
+@nimiq/mini-app-sdk inside Nimiq Pay
+@nimiq/hub-api in an ordinary browser
+(one wallet abstraction over both; see §88)
 
 Backend
 Go
@@ -3820,7 +3860,7 @@ Architectural reference only until license issue is resolved
 Nimpass architecture should make this flow boringly reliable:
 
 ```text
-Package
+Pass
    ↓
 NIM Payment
    ↓
@@ -3953,3 +3993,19 @@ When an architecture change is proposed:
 ```
 
 No downstream implementation should redefine these architectural decisions without explicitly updating this document.
+
+## September 2026 payment handoff update
+
+ADR-005 supersedes the earlier primary Hub checkout description: desktop uses
+an authenticated purchase locator QR, Nimiq Pay performs native payment, and
+both observe the same backend purchase. `/purchases/:id` requires the same
+customer identity.
+
+ADR-009 names what selects between the two: the **device class**, decided once
+in `frontend/web/src/lib/checkout-device.ts` and read only through
+`useCheckoutDevice()`. Mobile calls `sendBasicTransactionWithData()`; desktop
+shows the QR. The Purchase Intent is created before the branch, both branches
+pay that same intent, and device class is never an input to identity,
+authorisation or ownership. Wallet dispatch locks live in PostgreSQL (migration 000010).
+The local launcher proxies `/api` on the frontend origin; production must use
+its existing HTTPS ingress and explicit MAINNET configuration.

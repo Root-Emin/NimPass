@@ -2,13 +2,14 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { anOffer, mockApi, ok } from '@/test/mock-api'
-import { aCompensationPurchase, aPass, aPurchase } from '@/test/fixtures'
+import { aPublicPass, mockApi, ok } from '@/test/mock-api'
+import { aCompensationPurchase, aPurchasedPass, aPurchasedPassPage, aPurchase } from '@/test/fixtures'
+import { approveNativePayment } from '@/test/native-pay'
 
 /**
  * The compensation path, end to end.
  *
- * A customer pays. The transaction is verified and macro-finalised. The package
+ * A customer pays. The transaction is verified and macro-finalised. The pass
  * reaches its fixed expiration before the pass can be activated, so the backend
  * commits the receipt and opens a compensation case instead of issuing an
  * entitlement — `COMPENSATION_REQUIRED`, with no pass and no refund.
@@ -28,21 +29,32 @@ import { aCompensationPurchase, aPass, aPurchase } from '@/test/fixtures'
 const sendBasicTransactionWithData = vi.fn()
 const getNetworkReadiness = vi.fn()
 
+import { miniAppTransportDouble } from '@/test/wallet-transport'
+
 vi.mock('@/lib/nimiq', async () => {
   const actual = await vi.importActual<typeof import('@/lib/nimiq')>('@/lib/nimiq')
   return {
     ...actual,
     NIMIQ_NETWORK: 'TESTNET',
-    sendBasicTransactionWithData: (...args: unknown[]) => sendBasicTransactionWithData(...args),
-    getNetworkReadiness: (...args: unknown[]) => getNetworkReadiness(...args),
+    // The wallet is stubbed at the transport boundary — the one interface both
+    // Nimiq Pay and the Nimiq Hub implement. This double is the Nimiq Pay side,
+    // and it calls the hooks below with the provider's own parameter names, so
+    // an assertion here is an assertion about what the wallet is handed.
+    currentTransport: () =>
+      miniAppTransportDouble({
+        listAccounts: async () => ['NQ07 0000 0000 0000 0000 0000 0000 0000 0081'],
+        sendBasicTransactionWithData: (...args: unknown[]) =>
+          sendBasicTransactionWithData(...args),
+        getNetworkReadiness: (...args: unknown[]) => getNetworkReadiness(...args),
+      }),
   }
 })
 
 const { renderApp, stubSession, stubWallet } = await import('@/test/render')
 
 const TX_HASH = 'a1b2c3d4'.repeat(8)
-const OFFER = anOffer()
-const PACKAGE = OFFER.package
+const OFFER = aPublicPass()
+const CATALOG = OFFER.pass
 
 const INTENT = aPurchase()
 const PURCHASE_ID = INTENT.purchaseIntentId
@@ -69,13 +81,18 @@ function buyButtons() {
 function compensatingBackend() {
   const statuses = ['verifying', 'awaiting_finality', 'compensation_required'] as const
   let polls = 0
+  let paid = false
 
   return mockApi({
-    [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+    [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
     'POST /api/v1/purchases': () => ok(INTENT, 201),
-    [`POST /api/v1/purchases/${PURCHASE_ID}/transactions`]: () =>
-      ok({ ...INTENT, status: 'transaction_submitted', paymentRequest: null, transactionHash: TX_HASH }, 202),
-    [`/api/v1/purchases/${PURCHASE_ID}`]: () => {
+    [`POST /api/v1/purchases/${PURCHASE_ID}/wallet-attempts`]: () => ok(INTENT, 201),
+    [`POST /api/v1/purchases/${PURCHASE_ID}/transactions`]: () => {
+      paid = true
+      return ok({ ...INTENT, status: 'transaction_submitted', paymentRequest: null, transactionHash: TX_HASH }, 202)
+    },
+    [`GET /api/v1/purchases/${PURCHASE_ID}`]: () => {
+      if (!paid) return ok(INTENT)
       const status = statuses[Math.min(polls++, statuses.length - 1)]!
       return status === 'compensation_required'
         ? ok(COMPENSATED)
@@ -90,10 +107,10 @@ describe('purchase journey · compensation branch', () => {
     const { calls } = compensatingBackend()
 
     const user = userEvent.setup()
-    renderApp(`/packages/${PACKAGE.id}`, { wallet: WALLET, session: SESSION })
+    renderApp(`/pass/${CATALOG.id}`, { wallet: WALLET, session: SESSION })
 
-    await screen.findByRole('heading', { name: PACKAGE.title, level: 1 })
-    await user.click(buyButtons()[0]!)
+    await screen.findByRole('heading', { name: CATALOG.title, level: 1 })
+    await approveNativePayment(user)
 
     // The wallet was handed the backend's terms, once.
     await waitFor(() => expect(sendBasicTransactionWithData).toHaveBeenCalledTimes(1))
@@ -126,11 +143,11 @@ describe('purchase journey · compensation branch', () => {
     // §6: `doNotPayAgain` is a safety contract, not a hint. The controls have to
     // agree with the copy, or the warning beside them is decorative.
     mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
       [`/api/v1/purchases/${PURCHASE_ID}`]: () => ok(COMPENSATED),
     })
 
-    renderApp(`/packages/${PACKAGE.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
+    renderApp(`/pass/${CATALOG.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
 
     expect(
       await screen.findByText('Payment received, but your pass could not be issued'),
@@ -147,13 +164,13 @@ describe('purchase journey · compensation branch', () => {
     sendBasicTransactionWithData.mockResolvedValue(TX_HASH)
 
     const { calls } = mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
       [`/api/v1/purchases/${PURCHASE_ID}`]: () => ok(COMPENSATED),
       'POST /api/v1/purchases': () => ok(INTENT, 201),
     })
 
     const user = userEvent.setup()
-    renderApp(`/packages/${PACKAGE.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
+    renderApp(`/pass/${CATALOG.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
 
     await screen.findByText('Payment received, but your pass could not be issued')
 
@@ -170,11 +187,11 @@ describe('purchase journey · compensation branch', () => {
     // §38.7: local state is gone after a refresh; the purchase id in the URL is
     // the only handle, and the backend is the only source of truth.
     const { calls } = mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
       [`/api/v1/purchases/${PURCHASE_ID}`]: () => ok(COMPENSATED),
     })
 
-    renderApp(`/packages/${PACKAGE.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
+    renderApp(`/pass/${CATALOG.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
 
     expect(
       await screen.findByText('Payment received, but your pass could not be issued'),
@@ -192,11 +209,11 @@ describe('purchase journey · compensation branch', () => {
     // and rewrite the state as UNCERTAIN, discarding both the explanation and
     // the receipt (§2).
     const { calls } = mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
       [`/api/v1/purchases/${PURCHASE_ID}`]: () => ok(COMPENSATED),
     })
 
-    renderApp(`/packages/${PACKAGE.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
+    renderApp(`/pass/${CATALOG.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
     await screen.findByText('Payment received, but your pass could not be issued')
 
     const reads = () => calls.filter((call) => call.url === `/api/v1/purchases/${PURCHASE_ID}`).length
@@ -215,11 +232,11 @@ describe('purchase journey · compensation branch', () => {
     // §38.8, and the rule the whole milestone turns on: a verified payment is
     // never reported as a failure.
     mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
       [`/api/v1/purchases/${PURCHASE_ID}`]: () => ok(COMPENSATED),
     })
 
-    renderApp(`/packages/${PACKAGE.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
+    renderApp(`/pass/${CATALOG.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
     await screen.findByText('Payment received, but your pass could not be issued')
 
     const body = document.body.textContent ?? ''
@@ -232,12 +249,13 @@ describe('purchase journey · compensation branch', () => {
 })
 
 describe('compensation in My Passes', () => {
-  const PASS = aPass()
+  const PASS = aPurchasedPass()
 
   it('shows the purchase without inventing a pass for it', async () => {
     // §28: a compensation purchase produced no entitlement. A placeholder pass
     // with a session count would be a fabricated balance.
     mockApi({
+      '/api/v1/passes': () => ok(aPurchasedPassPage([])),
       '/api/v1/purchases': () => ok({ items: [COMPENSATED] }),
     })
 
@@ -251,7 +269,7 @@ describe('compensation in My Passes', () => {
     ).toBeInTheDocument()
 
     // Nothing claims sessions remain.
-    expect(screen.queryByText(/sessions left/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/sessions remaining/i)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Use a session' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: /View pass/i })).not.toBeInTheDocument()
   })
@@ -260,9 +278,10 @@ describe('compensation in My Passes', () => {
     // §29: opening the app days later must not lose the state. Both records
     // exist, and each is rendered as what it is.
     mockApi({
+      '/api/v1/passes': () => ok(aPurchasedPassPage([PASS])),
       '/api/v1/purchases': () =>
-        ok({ items: [COMPENSATED, aPurchase({ status: 'completed', passId: PASS.id })] }),
-      [`/api/v1/passes/${PASS.id}`]: () => ok(PASS),
+        ok({ items: [COMPENSATED, aPurchase({ status: 'completed', purchasedPassId: PASS.id })] }),
+      [`/api/v1/passes/${PASS.id}/redemptions`]: () => ok({ items: [] }),
     })
 
     renderApp('/passes', { wallet: WALLET, session: SESSION })
@@ -273,19 +292,23 @@ describe('compensation in My Passes', () => {
     expect(unresolved).toBeInTheDocument()
 
     // The genuine pass is still a pass, with its real remaining count.
-    expect(await screen.findByText(/of 10 sessions left/)).toBeInTheDocument()
+    expect(await screen.findByText('7')).toBeInTheDocument()
+    expect(screen.getByText('of 10 left')).toBeInTheDocument()
 
     // The compensation row links back to its purchase, not to a pass.
     const section = unresolved.closest('section')!
     const link = within(section).getByRole('link', { name: 'Open this purchase' })
     expect(link).toHaveAttribute(
       'href',
-      `/packages/${COMPENSATED.packageId}?purchase=${COMPENSATED.purchaseIntentId}`,
+      `/pass/${COMPENSATED.passId}?purchase=${COMPENSATED.purchaseIntentId}`,
     )
   })
 
   it('does not report "no passes yet" when a payment is unresolved', async () => {
-    mockApi({ '/api/v1/purchases': () => ok({ items: [COMPENSATED] }) })
+    mockApi({
+      '/api/v1/passes': () => ok(aPurchasedPassPage([])),
+      '/api/v1/purchases': () => ok({ items: [COMPENSATED] }),
+    })
 
     renderApp('/passes', { wallet: WALLET, session: SESSION })
 

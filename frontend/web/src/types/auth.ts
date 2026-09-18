@@ -40,14 +40,36 @@ export interface AuthChallenge {
 }
 
 /**
- * What `sign()` returns, per the official Nimiq Provider API:
- * `{ publicKey: string, signature: string }` — hex strings.
- * Ref: https://nimiq.dev/mini-apps/api-reference/nimiq-provider
+ * A wallet signature as the backend contract takes it: hex `publicKey` and
+ * `signature` (`Proof` in `backend/openapi.yaml`).
+ *
+ * The Nimiq provider's `sign()` returns exactly this shape
+ * (https://nimiq.dev/mini-apps/api-reference/nimiq-provider). The Hub's
+ * `signMessage()` returns `Uint8Array`s instead, and the difference is
+ * normalised inside the wallet adapter rather than leaked here
+ * (`src/lib/nimiq/transport.ts`).
  */
 export interface WalletSignature {
   publicKey: string
   signature: string
 }
+
+/**
+ * The signing scheme a proof was produced under, when the transport can name
+ * one (`Proof.signingScheme` in `backend/openapi.yaml`).
+ *
+ * The backend verifies an Ed25519 signature over a deterministic transform of
+ * its own challenge message, and the two supported wallet surfaces transform it
+ * differently: the Hub documents an envelope
+ * (`sha256('\x16Nimiq Signed Message:\n' + length + message)`), while the
+ * Mini App host's preprocessing is undocumented and stays on the deployment's
+ * configured default.
+ *
+ * Omitted means "use the server default". A client never widens what a
+ * signature means by naming a scheme: the message is still the server's exact
+ * nonce-bearing challenge, and only one transform is applied to it.
+ */
+export type SigningScheme = 'raw' | 'hub'
 
 /** The authenticated identity (`Identity`). */
 export interface AuthIdentity {
@@ -80,12 +102,29 @@ export interface AuthSession {
 /** Where the sign-in flow currently is. Each step is separately renderable. */
 export type AuthFlowState =
   | { kind: 'IDLE' }
-  /** Asking Nimiq Pay which account to use — opens a native dialog. */
+  /** Asking the wallet which account to use — opens a dialog or a Hub window. */
   | { kind: 'REQUESTING_ACCOUNT' }
   /** Asking the backend for a challenge bound to that account. */
   | { kind: 'REQUESTING_CHALLENGE'; wallet: string }
-  /** Nimiq Pay is showing the signing confirmation. Not a payment. */
-  | { kind: 'AWAITING_SIGNATURE'; challenge: AuthChallenge }
+  /**
+   * The wallet named an account, the backend issued its challenge, and the
+   * signature is waiting for the user to ask for it.
+   *
+   * Only reached on a transport that needs a user gesture per wallet operation
+   * — today, the Hub, because browsers grant one popup per click and this flow
+   * needs two wallet windows. It is a *pause in one flow*, not a second flow:
+   * the challenge is already in hand and the next step is the same
+   * `sign → verify` every runtime performs (docs/09-SECURITY.md §12).
+   */
+  | { kind: 'WALLET_SELECTED'; wallet: string; challenge: AuthChallenge }
+  /**
+   * The wallet is showing its signing confirmation. Not a payment.
+   *
+   * Carries the wallet rather than the challenge: the challenge request may
+   * still be in flight, because it is handed to the wallet as a promise so a
+   * Hub popup can open on the click instead of after the fetch.
+   */
+  | { kind: 'AWAITING_SIGNATURE'; wallet: string }
   /** Backend is verifying the signature and the challenge. */
   | { kind: 'VERIFYING'; challenge: AuthChallenge }
   | { kind: 'AUTHENTICATED'; session: AuthSession }
@@ -95,6 +134,8 @@ export type AuthFlowState =
 
 export type AuthFailureReason =
   | 'WALLET_UNAVAILABLE'
+  /** The browser blocked the Hub window. Recoverable, and retrying is right. */
+  | 'POPUP_BLOCKED'
   | 'NO_ACCOUNTS'
   | 'CHALLENGE_UNAVAILABLE'
   | 'CHALLENGE_EXPIRED'
@@ -109,4 +150,13 @@ export function isAuthInProgress(state: AuthFlowState): boolean {
     state.kind === 'AWAITING_SIGNATURE' ||
     state.kind === 'VERIFYING'
   )
+}
+
+/**
+ * True while the flow is waiting for the user rather than for a wallet or the
+ * backend. `WALLET_SELECTED` is deliberately not "in progress": nothing is in
+ * flight, and the dialog must offer a button rather than a spinner.
+ */
+export function isAwaitingUserStep(state: AuthFlowState): boolean {
+  return state.kind === 'WALLET_SELECTED'
 }

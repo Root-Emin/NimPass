@@ -1,17 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiError, authApi, messageForApiError, providerApi, packagesApi, providersApi, purchasesApi, passesApi, redemptionsApi } from '@/api'
-import { mockApi, ok, domainError, aProvider, aService, aPackage, anOffer } from '@/test/mock-api'
+import { ApiError, authApi, messageForApiError, mediaApi, providerApi, catalogApi, providersApi, purchasesApi, passesApi, redemptionsApi } from '@/api'
+import { mockApi, ok, domainError, aProvider, aService, aPass, aPublicPass } from '@/test/mock-api'
 import {
-  A_REFERENCE,
   aCompensationPurchase,
-  aPass,
+  aPurchasedPass,
   aPurchase,
   aRedemptionChallenge,
-  aRedemptionConfirmation,
   aRedemptionHistoryItem,
-  aRedemptionLookup,
-  anAuthorizedChallenge,
+  aConsumedChallenge,
 } from '@/test/fixtures'
 
 /**
@@ -30,7 +27,7 @@ import {
 
 const PROVIDER_ID = '00000000-0000-4000-8000-000000000002'
 const SERVICE_ID = '00000000-0000-4000-8000-000000000003'
-const PACKAGE_ID = '00000000-0000-4000-8000-000000000004'
+const PASS_ID = '00000000-0000-4000-8000-000000000004'
 const CHALLENGE_ID = 'bbbbbbbb-0000-4000-8000-000000000001'
 
 afterEach(() => {
@@ -221,14 +218,14 @@ describe('service contract', () => {
   })
 })
 
-describe('package contract', () => {
-  it('creates a package under provider + service with PackageInput', async () => {
+describe('pass contract', () => {
+  it('creates a pass under provider + service with PassInput', async () => {
     const { calls } = mockApi({
-      [`POST /api/v1/providers/${PROVIDER_ID}/services/${SERVICE_ID}/packages`]: () =>
-        ok(aPackage(), 201),
+      [`POST /api/v1/providers/${PROVIDER_ID}/services/${SERVICE_ID}/passes`]: () =>
+        ok(aPass(), 201),
     })
 
-    await providerApi.createPackage(PROVIDER_ID, SERVICE_ID, {
+    await providerApi.createPass(PROVIDER_ID, SERVICE_ID, {
       title: '10 Sessions',
       sessions: 10,
       priceLuna: 25_000_000,
@@ -236,7 +233,7 @@ describe('package contract', () => {
     })
 
     const call = calls[0]!
-    expect(call.url).toBe(`/api/v1/providers/${PROVIDER_ID}/services/${SERVICE_ID}/packages`)
+    expect(call.url).toBe(`/api/v1/providers/${PROVIDER_ID}/services/${SERVICE_ID}/passes`)
     expect(call.body).toEqual({
       title: '10 Sessions',
       sessions: 10,
@@ -251,23 +248,47 @@ describe('package contract', () => {
 
   it('publishes with POST and an empty body', async () => {
     const { calls } = mockApi({
-      [`POST /api/v1/packages/${PACKAGE_ID}/publish`]: () => ok(aPackage()),
+      [`POST /api/v1/catalog/passes/${PASS_ID}/publish`]: () => ok(aPass()),
     })
 
-    await providerApi.publishPackage(PACKAGE_ID)
+    await providerApi.publishPass(PASS_ID)
     expect(calls[0]!.method).toBe('POST')
     expect(calls[0]!.body).toBeUndefined()
   })
 
+  it('uploads a cover as multipart /media', async () => {
+    mockApi({
+      'POST /api/v1/media': () =>
+        ok(
+          {
+            id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+            kind: 'pass_cover',
+            contentType: 'image/jpeg',
+            byteSize: 1200,
+            createdAt: '2026-01-01T00:00:00Z',
+          },
+          201,
+        ),
+    })
+
+    const stored = await mediaApi.uploadPassCover(
+      new File([new Uint8Array([0xff, 0xd8, 0xff])], 'cover.jpg', { type: 'image/jpeg' }),
+    )
+    expect(stored.id).toBe('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')
+    expect(mediaApi.mediaPath(stored.id)).toBe(
+      '/api/v1/media/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    )
+  })
+
   it('surfaces a publish rejection rather than bypassing it', async () => {
     mockApi({
-      [`POST /api/v1/packages/${PACKAGE_ID}/publish`]: () =>
+      [`POST /api/v1/catalog/passes/${PASS_ID}/publish`]: () =>
         domainError(409, 'CONFLICT', 'payout wallet not verified'),
     })
 
     // Publishing needs an active service and a verified payout wallet. The
     // backend decides; the frontend reports (docs/08-ARCHITECTURE.md §147).
-    await expect(providerApi.publishPackage(PACKAGE_ID)).rejects.toMatchObject({
+    await expect(providerApi.publishPass(PASS_ID)).rejects.toMatchObject({
       code: 'CONFLICT',
       status: 409,
     })
@@ -275,55 +296,55 @@ describe('package contract', () => {
 })
 
 describe('public discovery contract', () => {
-  it('reads PublicOffer from the two package endpoints', async () => {
-    const offer = anOffer()
+  it('reads PublicPass from the two pass endpoints', async () => {
+    const offer = aPublicPass()
     mockApi({
-      '/api/v1/public/packages': () => ok({ items: [offer] }),
-      [`/api/v1/public/packages/${offer.package.id}`]: () => ok(offer),
+      '/api/v1/public/passes': () => ok({ items: [offer] }),
+      [`/api/v1/public/passes/${offer.pass.id}`]: () => ok(offer),
     })
 
-    const list = await packagesApi.listPublicPackages()
-    expect(list.items[0]!.package.sessions).toBe(10)
+    const list = await catalogApi.listPublicPasses()
+    expect(list.items[0]!.pass.sessions).toBe(10)
     expect(list.items[0]!.provider.name).toBe('Alex Fitness')
     expect(list.items[0]!.service.name).toBe('Personal Training')
 
-    const single = await packagesApi.getPublicPackage(offer.package.id)
-    expect(single.package.id).toBe(offer.package.id)
+    const single = await catalogApi.getPublicPass(offer.pass.id)
+    expect(single.pass.id).toBe(offer.pass.id)
   })
 
-  it('reads the public provider as identity only', async () => {
+  it('reads the public provider including the identicon wallet', async () => {
+    const profile = aPublicPass().provider
     mockApi({
-      [`/api/v1/public/providers/${PROVIDER_ID}`]: () =>
-        ok({ id: PROVIDER_ID, name: 'Alex Fitness' }),
+      [`/api/v1/public/providers/${PROVIDER_ID}`]: () => ok(profile),
     })
 
     const provider = await providersApi.getPublicProvider(PROVIDER_ID)
-    // `PublicProvider` is `{ id, name }` — nothing else is available to render.
-    expect(Object.keys(provider).sort()).toEqual(['id', 'name'])
+    expect(provider).toEqual(profile)
+    expect(provider.wallet).toMatch(/^NQ/)
   })
 
   it('sends no query parameters, because the contract defines none', async () => {
-    const { calls } = mockApi({ '/api/v1/public/packages': () => ok({ items: [] }) })
+    const { calls } = mockApi({ '/api/v1/public/passes': () => ok({ items: [] }) })
 
-    await packagesApi.listPublicPackages()
-    expect(calls[0]!.url).toBe('/api/v1/public/packages')
+    await catalogApi.listPublicPasses()
+    expect(calls[0]!.url).toBe('/api/v1/public/passes')
   })
 })
 
 describe('purchase and pass contract', () => {
   const PURCHASE_ID = aPurchase().purchaseIntentId
 
-  it('creates an intent with only { packageId } and an Idempotency-Key', async () => {
+  it('creates an intent with only { passId } and an Idempotency-Key', async () => {
     const { calls, fetchMock } = mockApi({
       'POST /api/v1/purchases': () => ok(aPurchase(), 201),
     })
 
     await purchasesApi.createPurchaseIntent(
-      { packageId: PACKAGE_ID },
+      { passId: PASS_ID },
       { idempotencyKey: 'attempt-1' },
     )
 
-    expect(calls[0]!.body).toEqual({ packageId: PACKAGE_ID })
+    expect(calls[0]!.body).toEqual({ passId: PASS_ID })
 
     const init = fetchMock.mock.calls[0]![1] as RequestInit
     const headers = init.headers as Record<string, string>
@@ -352,7 +373,7 @@ describe('purchase and pass contract', () => {
   })
 
   it('reads a Pass with the contract session field names', async () => {
-    const pass = aPass()
+    const pass = aPurchasedPass()
     mockApi({ [`/api/v1/passes/${pass.id}`]: () => ok(pass) })
 
     const result = await passesApi.getPass(pass.id)
@@ -363,12 +384,12 @@ describe('purchase and pass contract', () => {
 
   it('accepts 200 for a recovered intent as readily as 201 for a new one', async () => {
     // The contract returns 200 when an active unpaid intent for this wallet and
-    // package already existed — recovery built into `POST /purchases`. Treating
+    // pass already existed — recovery built into `POST /purchases`. Treating
     // that as anything other than a normal purchase would mint a second intent.
     mockApi({ 'POST /api/v1/purchases': () => ok(aPurchase(), 200) })
 
     const recovered = await purchasesApi.createPurchaseIntent(
-      { packageId: PACKAGE_ID },
+      { passId: PASS_ID },
       { idempotencyKey: 'attempt-1' },
     )
     expect(recovered.purchaseIntentId).toBe(PURCHASE_ID)
@@ -389,13 +410,13 @@ describe('purchase and pass contract', () => {
     expect(result.compensation).toEqual(
       expect.objectContaining({
         status: 'OPEN',
-        reason: 'PACKAGE_EXPIRED_BEFORE_ACTIVATION',
+        reason: 'PASS_EXPIRED_BEFORE_ACTIVATION',
         doNotPayAgain: true,
         automatedRefund: false,
       }),
     )
     // No pass, and nothing left to pay.
-    expect(result.passId).toBeNull()
+    expect(result.purchasedPassId).toBeNull()
     expect(result.paymentRequest).toBeNull()
     expect(result).not.toHaveProperty('doNotPayAgain')
   })
@@ -426,14 +447,14 @@ describe('purchase and pass contract', () => {
   it('surfaces the cutoff as its own code rather than a generic conflict', async () => {
     mockApi({
       'POST /api/v1/purchases': () =>
-        domainError(409, 'PACKAGE_PURCHASE_CUTOFF', 'too close to expiration'),
+        domainError(409, 'PASS_PURCHASE_CUTOFF', 'too close to expiration'),
     })
 
     const error = await captureApiError(
-      purchasesApi.createPurchaseIntent({ packageId: PACKAGE_ID }, { idempotencyKey: 'k' }),
+      purchasesApi.createPurchaseIntent({ passId: PASS_ID }, { idempotencyKey: 'k' }),
     )
 
-    expect(error.code).toBe('PACKAGE_PURCHASE_CUTOFF')
+    expect(error.code).toBe('PASS_PURCHASE_CUTOFF')
     expect(error.status).toBe(409)
     // Translated, and not into payment language — nobody was charged.
     const message = messageForApiError(error)
@@ -451,7 +472,7 @@ describe('error contract', () => {
     ['NOT_FOUND', 404],
     ['CONFLICT', 409],
     ['PAYMENT_CONFLICT', 409],
-    ['PACKAGE_PURCHASE_CUTOFF', 409],
+    ['PASS_PURCHASE_CUTOFF', 409],
     ['INTENT_EXPIRED', 410],
     ['RATE_LIMITED', 429],
     ['CHALLENGE_EXPIRED', 410],
@@ -520,33 +541,31 @@ describe('redemption contract', () => {
     expect(calls[0]!.method).toBe('POST')
     expect(calls[0]!.body).toBeUndefined()
 
-    // A fresh challenge carries the message to sign and no reference at all.
+    // A fresh challenge carries the message to sign and nothing else.
     expect(challenge.message).toContain('Purpose: AUTHORIZE_REDEMPTION')
-    expect(challenge.redemptionReference).toBeNull()
     expect(challenge.status).toBe('CREATED')
+    expect(challenge).not.toHaveProperty('redemptionReference')
   })
 
-  it('reads the current challenge from its own path, without a reference', async () => {
+  it('reads the current challenge from its own path', async () => {
     mockApi({
       [`/api/v1/passes/${PASS_ID}/redemption-challenges/current`]: () =>
-        ok(anAuthorizedChallenge({ redemptionReference: null })),
+        ok(aRedemptionChallenge()),
     })
 
     const current = await redemptionsApi.getCurrentRedemptionChallenge(PASS_ID)
-    expect(current.status).toBe('AUTHORIZED')
-    // The contract is explicit that reading never returns the bearer token.
-    expect(current.redemptionReference).toBeNull()
+    expect(current.status).toBe('CREATED')
   })
 
-  it('authorizes with exactly { publicKey, signature } on the /authorization path', async () => {
+  it('authorizes with exactly { publicKey, signature }, and that spends the session', async () => {
     const { calls } = mockApi({
       [`POST /api/v1/redemption-challenges/${CHALLENGE_ID}/authorization`]: () =>
-        ok(anAuthorizedChallenge()),
+        ok(aConsumedChallenge()),
     })
 
     const publicKey = 'AbCdEf'.padEnd(64, '0')
     const signature = 'FfEeDd'.padEnd(128, '0')
-    const authorized = await redemptionsApi.authorizeRedemption(CHALLENGE_ID, {
+    const consumed = await redemptionsApi.authorizeRedemption(CHALLENGE_ID, {
       publicKey,
       signature,
     })
@@ -557,45 +576,19 @@ describe('redemption contract', () => {
     // Exactly two keys, and both byte-identical to what the wallet returned.
     expect(calls[0]!.body).toEqual({ publicKey, signature })
 
-    expect(authorized.redemptionReference).toMatch(/^NR1:[0-9a-f]{64}$/)
+    // One call, one consumed session, and the new counts come back with it.
+    expect(consumed.status).toBe('CONSUMED')
+    expect(consumed.redemption?.sessionOrdinal).toBe(4)
+    expect(consumed.pass.remainingSessions).toBe(6)
+    // Nothing is minted for a second party to present.
+    expect(consumed).not.toHaveProperty('redemptionReference')
   })
 
-  it('looks a reference up on the lookup path and gets non-consuming context', async () => {
-    const { calls } = mockApi({
-      'POST /api/v1/providers/p1/redemptions/lookup': () => ok(aRedemptionLookup()),
-    })
-
-    const found = await redemptionsApi.lookupRedemption('p1', {
-      redemptionReference: A_REFERENCE,
-    })
-
-    expect(calls[0]!.url).toBe('/api/v1/providers/p1/redemptions/lookup')
-    expect(calls[0]!.body).toEqual({ redemptionReference: A_REFERENCE })
-
-    // The lookup names the session it *would* consume; it has not consumed it.
-    expect(found.nextSessionOrdinal).toBe(4)
-    expect(found.remainingSessions).toBe(7)
-    expect(found).not.toHaveProperty('redemptionId')
-    expect(found).not.toHaveProperty('ownerWallet')
-  })
-
-  it('confirms on a different path from lookup, and reads back the new counts', async () => {
-    const { calls } = mockApi({
-      'POST /api/v1/providers/p1/redemptions/confirm': () => ok(aRedemptionConfirmation()),
-    })
-
-    const result = await redemptionsApi.confirmRedemption('p1', {
-      redemptionReference: A_REFERENCE,
-    })
-
-    // The two provider endpoints must never collapse into one.
-    expect(calls[0]!.url).toBe('/api/v1/providers/p1/redemptions/confirm')
-    expect(calls[0]!.url).not.toContain('lookup')
-    expect(calls[0]!.body).toEqual({ redemptionReference: A_REFERENCE })
-
-    expect(result.usedSessions).toBe(4)
-    expect(result.remainingSessions).toBe(6)
-    expect(result.completed).toBe(false)
+  it('exposes no provider write path into a redemption', () => {
+    // The provider lookup/confirm pair is gone from the contract, and its
+    // absence from the client is what keeps it gone.
+    expect(redemptionsApi).not.toHaveProperty('lookupRedemption')
+    expect(redemptionsApi).not.toHaveProperty('confirmRedemption')
   })
 
   it('reads both histories as { items } of contract-named fields', async () => {
@@ -620,15 +613,17 @@ describe('redemption contract', () => {
     ['REDEMPTION_NOT_AUTHORIZED', 409],
     ['INVALID_REDEMPTION_SIGNATURE', 401],
     ['STALE_REDEMPTION_CHALLENGE', 409],
-    ['INVALID_REDEMPTION_TOKEN', 404],
   ])('translates %s into human copy', async (code, status) => {
     mockApi({
-      'POST /api/v1/providers/p1/redemptions/lookup': () =>
+      [`POST /api/v1/redemption-challenges/${CHALLENGE_ID}/authorization`]: () =>
         domainError(status, code, 'raw backend sentence'),
     })
 
     const error = await captureApiError(
-      redemptionsApi.lookupRedemption('p1', { redemptionReference: A_REFERENCE }),
+      redemptionsApi.authorizeRedemption(CHALLENGE_ID, {
+        publicKey: 'a'.repeat(64),
+        signature: 'b'.repeat(128),
+      }),
     )
     expect(error.code).toBe(code)
 

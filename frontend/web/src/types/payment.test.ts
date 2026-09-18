@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { aCompensationPurchase, aPurchase } from '@/test/fixtures'
+import {
+  aCompensationPurchase,
+  aProvisionalPurchase,
+  aPurchase,
+  aReversedSettlementPurchase,
+  aSettlement,
+} from '@/test/fixtures'
 
 import {
   doNotPayAgain,
@@ -58,7 +64,7 @@ describe('payment state machine', () => {
     expect(confirmedNoPass.kind).toBe('PASS_CREATING')
 
     const confirmedWithPass = paymentStateFromPurchase(
-      aPurchase({ status: 'completed', passId: 'pass_9' }),
+      aPurchase({ status: 'completed', purchasedPassId: 'pass_9' }),
     )
     expect(confirmedWithPass).toEqual(
       expect.objectContaining({ kind: 'COMPLETE', passId: 'pass_9' }),
@@ -143,8 +149,108 @@ describe('compensation required', () => {
 
   it('produces no pass id to navigate to', () => {
     const state = paymentStateFromPurchase(compensated)
-    expect(compensated.passId).toBeNull()
+    expect(compensated.purchasedPassId).toBeNull()
     expect(state).not.toHaveProperty('passId')
+  })
+})
+
+/**
+ * A completed purchase whose payment is still provisional.
+ *
+ * The normal outcome of a fast checkout: the backend confirmed on canonical
+ * inclusion and issued the pass, and the macro block that makes the payment
+ * irreversible is still up to a minute away (ADR-021). Settlement is reported
+ * so the purchase can be *described*, never so this side can decide whether the
+ * customer may have their pass — a mapping that read `settlement.provisional`
+ * and held back COMPLETE would put the old forty-second wait straight back.
+ */
+describe('provisional settlement', () => {
+  const provisional = aProvisionalPurchase()
+
+  it('is complete for the customer while the payment is still provisional', () => {
+    const state = paymentStateFromPurchase(provisional)
+
+    expect(provisional.settlement).toMatchObject({ status: 'INCLUDED', provisional: true })
+    expect(state).toEqual(
+      expect.objectContaining({ kind: 'COMPLETE', passId: provisional.purchasedPassId }),
+    )
+    expect(isTerminalPaymentState(state)).toBe(true)
+    // Nothing left to poll for: the finality worker's progress is not the
+    // customer's business, and a spinner here would be a lie about their pass.
+    expect(isSettlingPaymentState(state)).toBe(false)
+  })
+
+  it('maps identically once the payment is promoted to finalised', () => {
+    const finalized = aProvisionalPurchase({ settlement: aSettlement({ status: 'FINALIZED' }) })
+
+    expect(finalized.settlement).toMatchObject({ provisional: false, finalityBlock: 1_060 })
+
+    // The promotion is invisible here by design: same kind, same pass, same
+    // affordances. Only the `settlement` the state carries along differs.
+    const before = paymentStateFromPurchase(provisional)
+    const after = paymentStateFromPurchase(finalized)
+    expect(after.kind).toBe(before.kind)
+    expect(after).toMatchObject({ passId: provisional.purchasedPassId })
+    expect(isTerminalPaymentState(after)).toBe(isTerminalPaymentState(before))
+    expect(mustWarnAgainstSecondPayment(after)).toBe(mustWarnAgainstSecondPayment(before))
+  })
+
+  it('never invites a second payment for a purchase that already settled', () => {
+    const state = paymentStateFromPurchase(provisional)
+
+    expect(mayRetryPayment(state)).toBe(false)
+    expect(mayStartPayment(state)).toBe(false)
+    expect(mayHaveBeenCharged(state)).toBe(true)
+    // COMPLETE is the one charged state that needs no warning: they have the
+    // pass in front of them.
+    expect(mustWarnAgainstSecondPayment(state)).toBe(false)
+  })
+})
+
+/**
+ * The reversed settlement: an inclusion that never became canonical.
+ *
+ * Shares `compensation_required` with the verified-payment-no-pass case and
+ * must not share its advice, because here no NIM left the wallet.
+ */
+describe('reversed settlement', () => {
+  const reversed = aReversedSettlementPurchase()
+
+  it('is compensation, not a failure, even though nothing was charged', () => {
+    const state = paymentStateFromPurchase(reversed)
+
+    expect(state.kind).toBe('COMPENSATION_REQUIRED')
+    expect(state.kind).not.toBe('FAILED')
+    expect(state.kind).not.toBe('COMPLETE')
+    expect(isTerminalPaymentState(state)).toBe(true)
+  })
+
+  it('carries the backend do-not-pay-again flag through as false', () => {
+    // The opposite of the expired-pass case, and the one bit of this state the
+    // copy branches on. Never defaulted: see `doNotPayAgain`.
+    expect(doNotPayAgain(paymentStateFromPurchase(reversed))).toBe(false)
+    expect(doNotPayAgain(paymentStateFromPurchase(aCompensationPurchase()))).toBe(true)
+  })
+
+  it('reports the contested settlement alongside the compensation case', () => {
+    expect(reversed.settlement).toMatchObject({
+      status: 'CONTESTED',
+      provisional: false,
+      finalityBlock: null,
+      finalizedAt: null,
+      contestReason: 'SETTLEMENT_REVERSED',
+    })
+    expect(reversed.compensation?.reason).toBe('PAYMENT_SETTLEMENT_REVERSED')
+    // Still no automated refund promised — there is nothing to refund.
+    expect(hasAutomatedRefund(paymentStateFromPurchase(reversed))).toBe(false)
+  })
+
+  it('does not re-arm this intent, whatever the charge outcome was', () => {
+    // A signed transaction that lost the chain can in principle be re-mined,
+    // so re-paying *this* intent is not safe. A fresh purchase is.
+    const state = paymentStateFromPurchase(reversed)
+    expect(mayRetryPayment(state)).toBe(false)
+    expect(mayStartPayment(state)).toBe(false)
   })
 })
 

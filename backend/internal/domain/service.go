@@ -19,6 +19,7 @@ type Service struct {
 	ProviderID  ID
 	Name        string
 	Description string
+	Category    Category
 	Status      ServiceStatus
 	CreatedAt   time.Time
 	UpdatedAt   time.Time

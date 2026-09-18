@@ -23,12 +23,11 @@ export interface ApiErrorBody {
  * these into human copy; it never parses `message` to make decisions.
  */
 export const DOMAIN_ERROR_CODES = [
-  'PACKAGE_NOT_FOUND',
-  'PACKAGE_UNAVAILABLE',
+  'PASS_NOT_FOUND',
+  'PASS_UNAVAILABLE',
   'PROVIDER_NOT_FOUND',
   'PURCHASE_NOT_FOUND',
   'PAYMENT_NOT_CONFIRMED',
-  'PASS_NOT_FOUND',
   'PASS_NOT_OWNED',
   'PASS_COMPLETED',
   'PASS_EXPIRED',

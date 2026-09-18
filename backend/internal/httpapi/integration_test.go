@@ -78,7 +78,7 @@ func httpKey(t *testing.T) (string, string, ed25519.PrivateKey) {
 	return wallet, hex.EncodeToString(pub), key
 }
 
-func TestRealHTTPProviderPackageFlow(t *testing.T) {
+func TestRealHTTPProviderPassFlow(t *testing.T) {
 	pool := httpTestPool(t)
 	router := NewRouterWithConfig(pool, slog.Default(), config.Config{Environment: "test", Network: "TESTNET", PublicOrigin: "http://localhost:5173"})
 	var cookie *http.Cookie
@@ -118,28 +118,45 @@ func TestRealHTTPProviderPackageFlow(t *testing.T) {
 		}
 		return rr.Code, response, rr
 	}
+	// Signs in and makes that account the one every later request acts as.
+	// The flow needs two: a provider who creates the pass and a buyer who
+	// buys it, because a provider is no longer allowed to buy their own.
+	login := func(label, wallet, pub string, key ed25519.PrivateKey) {
+		t.Helper()
+		cookie, csrf = nil, ""
+		status, c, _ := request("POST", "/api/v1/auth/challenges", map[string]any{"wallet": wallet})
+		if status != 201 {
+			t.Fatalf("%s challenge %d %v", label, status, c)
+		}
+		message := c["message"].(string)
+		sig := hex.EncodeToString(ed25519.Sign(key, []byte(message)))
+		status, session, rr := request("POST", "/api/v1/auth/sessions", map[string]any{"challengeId": c["id"], "wallet": wallet, "publicKey": pub, "signature": sig})
+		if status != 201 {
+			t.Fatalf("%s login %d %v", label, status, session)
+		}
+		cookie = rr.Result().Cookies()[0]
+		csrf = session["csrfToken"].(string)
+	}
 	wallet, pub, key := httpKey(t)
-	status, c, _ := request("POST", "/api/v1/auth/challenges", map[string]any{"wallet": wallet})
-	if status != 201 {
-		t.Fatalf("challenge %d %v", status, c)
-	}
-	message := c["message"].(string)
-	sig := hex.EncodeToString(ed25519.Sign(key, []byte(message)))
-	status, login, rr := request("POST", "/api/v1/auth/sessions", map[string]any{"challengeId": c["id"], "wallet": wallet, "publicKey": pub, "signature": sig})
-	if status != 201 {
-		t.Fatalf("login %d %v", status, login)
-	}
-	cookie = rr.Result().Cookies()[0]
-	csrf = login["csrfToken"].(string)
+	buyerWallet, buyerPub, buyerKey := httpKey(t)
+	login("provider", wallet, pub, key)
 	if !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("cookie flags: %+v", cookie)
 	}
+	status := 0
 	status, _, _ = request("POST", "/api/v1/providers", map[string]any{"name": "Studio"})
 	if status != 201 {
 		t.Fatalf("provider create %d", status)
 	}
 	_, provider, _ := request("GET", "/api/v1/providers", nil)
-	providerID := provider["items"].([]any)[0].(map[string]any)["id"].(string)
+	profile := provider["items"].([]any)[0].(map[string]any)
+	providerID := profile["id"].(string)
+	// Created with the login wallet already adopted as the payout destination,
+	// over HTTP and without a second ceremony (ADR-025). Nothing in the create
+	// request named an address; the server took it from the session.
+	if profile["payoutWallet"] != wallet || profile["payoutVerifiedAt"] == nil {
+		t.Fatalf("owner payout adoption %v", profile)
+	}
 	status, service, _ := request("POST", "/api/v1/providers/"+providerID+"/services", map[string]any{"name": "Yoga", "description": "Classes"})
 	if status != 201 {
 		t.Fatalf("service create %d %v", status, service)
@@ -149,20 +166,26 @@ func TestRealHTTPProviderPackageFlow(t *testing.T) {
 	if status != 200 {
 		t.Fatalf("service active %d %v", status, service)
 	}
-	status, pack, _ := request("POST", "/api/v1/providers/"+providerID+"/services/"+serviceID+"/packages", map[string]any{"title": "Ten sessions", "description": "Yoga", "sessions": 10, "priceLuna": 12340000})
+	status, catalog, _ := request("POST", "/api/v1/providers/"+providerID+"/services/"+serviceID+"/passes", map[string]any{"title": "Ten sessions", "description": "Yoga", "sessions": 10, "priceLuna": 12340000})
 	if status != 201 {
-		t.Fatalf("package create %d %v", status, pack)
+		t.Fatalf("pass create %d %v", status, catalog)
 	}
-	packageID := pack["id"].(string)
-	status, _, _ = request("POST", "/api/v1/purchases", map[string]any{"packageId": packageID, "priceLuna": 1})
+	passID := catalog["id"].(string)
+	status, _, _ = request("POST", "/api/v1/purchases", map[string]any{"passId": passID, "priceLuna": 1})
 	if status != 400 {
 		t.Fatalf("client price accepted %d", status)
 	}
-	status, _, _ = request("POST", "/api/v1/packages/"+packageID+"/publish", nil)
+	// The publish gate still exists and is still the backend's. A provider is
+	// no longer born without a payout wallet, so the refusal is reached the one
+	// way that remains: a provider that has none.
+	if _, err := pool.Exec(context.Background(), `UPDATE providers SET payout_wallet=NULL,payout_verified_at=NULL WHERE id=$1`, providerID); err != nil {
+		t.Fatal(err)
+	}
+	status, _, _ = request("POST", "/api/v1/catalog/passes/"+passID+"/publish", nil)
 	if status != 409 {
 		t.Fatalf("unverified publish status=%d", status)
 	}
-	status, public, _ := request("GET", "/api/v1/public/packages", nil)
+	status, public, _ := request("GET", "/api/v1/public/passes", nil)
 	if status != 200 || len(public["items"].([]any)) != 0 {
 		t.Fatalf("draft public %d %v", status, public)
 	}
@@ -176,15 +199,24 @@ func TestRealHTTPProviderPackageFlow(t *testing.T) {
 	if status != 200 || verified["payoutWallet"] != payoutWallet {
 		t.Fatalf("payout verify %d %v", status, verified)
 	}
-	status, pack, _ = request("POST", "/api/v1/packages/"+packageID+"/publish", nil)
+	status, catalog, _ = request("POST", "/api/v1/catalog/passes/"+passID+"/publish", nil)
 	if status != 200 {
-		t.Fatalf("publish %d %v", status, pack)
+		t.Fatalf("publish %d %v", status, catalog)
 	}
-	status, public, _ = request("GET", "/api/v1/public/packages", nil)
+	status, public, _ = request("GET", "/api/v1/public/passes", nil)
 	if status != 200 || len(public["items"].([]any)) != 1 {
 		t.Fatalf("public %d %v", status, public)
 	}
-	status, intent, _ := request("POST", "/api/v1/purchases", map[string]any{"packageId": packageID})
+	// The provider owns this pass, so the backend refuses to sell it to them —
+	// with a session that is otherwise perfectly valid, and over HTTP, which
+	// is the only place the rule can be said to hold.
+	status, refused, _ := request("POST", "/api/v1/purchases", map[string]any{"passId": passID})
+	if status != 403 || refused["error"].(map[string]any)["code"] != "SELF_PURCHASE_NOT_ALLOWED" {
+		t.Fatalf("self purchase allowed %d %v", status, refused)
+	}
+
+	login("buyer", buyerWallet, buyerPub, buyerKey)
+	status, intent, _ := request("POST", "/api/v1/purchases", map[string]any{"passId": passID})
 	if status != 201 {
 		t.Fatalf("purchase intent %d %v", status, intent)
 	}

@@ -220,7 +220,7 @@ provider profiles
 
 services
 
-packages
+Passes
 
 purchases
 
@@ -250,7 +250,7 @@ product UX
 Nimiq Pay does **not** automatically:
 
 ```text
-create Nimpass packages
+create Nimpass Passes
 
 store Nimpass passes
 
@@ -376,7 +376,7 @@ discovery
 
 provider pages
 
-package pages
+Pass pages
 
 public sharing
 
@@ -443,7 +443,7 @@ Sensitive wallet actions cannot be silently bypassed by the Mini App.
 
 # 10. Mini App SDK
 
-For Nimiq provider access, use the official package:
+For Nimiq provider access, use the official Pass:
 
 ```text
 @nimiq/mini-app-sdk
@@ -490,7 +490,7 @@ However:
 Bad:
 
 ```text
-User opens a public package
+User opens a public Pass
         ↓
 Entire page waits for wallet initialization
         ↓
@@ -500,7 +500,7 @@ User cannot even read the offer
 Preferred:
 
 ```text
-Package page renders
+Pass page renders
         ↓
 User understands the offer
         ↓
@@ -808,7 +808,7 @@ Do not include:
 ```text
 customer PII
 
-private package details
+private Pass details
 
 authentication secrets
 
@@ -871,7 +871,7 @@ Nimpass MVP is intentionally centered on:
 NIM
 ```
 
-for package payments.
+for Pass payments.
 
 The Mini Apps platform may support additional blockchain environments and assets.
 
@@ -880,7 +880,7 @@ That does not require Nimpass to expose them.
 Current product decision:
 
 ```text
-PRIMARY PACKAGE PAYMENT CURRENCY
+PRIMARY PASS PAYMENT CURRENCY
 
 NIM
 ```
@@ -910,7 +910,7 @@ Additional payment assets require an explicit future product decision.
 Nimiq should appear where it strengthens the actual Nimpass lifecycle.
 
 ```text
-PACKAGE PURCHASE
+PASS PURCHASE
 → NIM transaction
 
 WALLET CONTEXT
@@ -1010,7 +1010,7 @@ APPLICATION STATE
 
 provider
 service
-package
+Pass
 purchase
 pass
 remaining sessions
@@ -1428,7 +1428,7 @@ providers
 
 services
 
-packages
+Passes
 
 purchases
 
@@ -1524,9 +1524,9 @@ Do not hardcode stale examples without checking the current Developer Center.
 Because Nimpass is web-first, this is an important customer flow:
 
 ```text
-Customer opens package in normal browser
+Customer opens Pass in normal browser
         ↓
-Customer reads package
+Customer reads Pass
         ↓
 Customer chooses Buy Pass
         ↓
@@ -1534,7 +1534,7 @@ wallet capability becomes necessary
         ↓
 Open / continue inside Nimiq Pay
         ↓
-same Nimpass package context
+same Nimpass Pass context
         ↓
 customer confirms NIM payment
 ```
@@ -1574,7 +1574,7 @@ Open in Nimiq Pay
 
         ↓
 
-same package
+same Pass
 ```
 
 Where appropriate, the deep-linked route may preserve identifiers such as:
@@ -1582,7 +1582,7 @@ Where appropriate, the deep-linked route may preserve identifiers such as:
 ```text
 provider context
 
-package context
+Pass context
 
 purchase flow context
 ```
@@ -1612,7 +1612,7 @@ Authoritative values such as:
 ```text
 payment recipient
 
-package price
+Pass price
 
 session quantity
 
@@ -1629,9 +1629,9 @@ Exact payment rules belong in:
 
 ---
 
-# 44. Sharing Nimpass Packages
+# 44. Sharing Nimpass Passes
 
-A provider may share a normal Nimpass package URL.
+A provider may share a normal Nimpass Pass URL.
 
 Where useful, Nimpass may additionally provide a Mini App-oriented entry.
 
@@ -1860,7 +1860,7 @@ Mini-App-critical customer screens must therefore remain comfortable on constrai
 Important examples:
 
 ```text
-package detail
+Pass detail
 
 purchase
 
@@ -1962,7 +1962,7 @@ browse freely
 
 read provider
 
-read package
+read Pass
 
 understand offer
 
@@ -1998,7 +1998,7 @@ open homepage
 open provider
 → wallet prompt
 
-open package
+open Pass
 → wallet prompt
 
 press buy
@@ -2372,7 +2372,7 @@ NIM transactions use Luna as the smallest unit.
 
 Nimpass has its own backend and database.
 
-NIM is the primary package-payment currency for the MVP.
+NIM is the primary Pass-payment currency for the MVP.
 
 Wallet context contributes to pass ownership.
 
@@ -2588,7 +2588,7 @@ Only the following competition-relevant principle belongs here:
 For Nimpass, this means the product should use Nimiq capabilities where they naturally support:
 
 ```text
-package purchase
+Pass purchase
 
 wallet context
 
@@ -2773,7 +2773,7 @@ NIMPASS
 
 provides the actual recurring-service product:
 providers,
-packages,
+Passes,
 purchases,
 passes,
 remaining sessions,
@@ -2786,7 +2786,7 @@ Together:
 ```text
 Customer discovers a useful service
         ↓
-Customer understands a multi-session package
+Customer understands a multi-session Pass
         ↓
 Customer pays with NIM
         ↓

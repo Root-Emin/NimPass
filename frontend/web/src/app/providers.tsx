@@ -4,6 +4,7 @@ import { useState, type ReactNode } from 'react'
 import { createQueryClient } from '@/app/query-client'
 import { SessionProvider } from '@/app/session-provider'
 import { WalletProvider } from '@/app/wallet-provider'
+import { ToastProvider } from '@/components/ui/toast'
 
 /**
  * Application-wide providers.
@@ -18,7 +19,12 @@ export function AppProviders({ children }: { children: ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
       <WalletProvider>
-        <SessionProvider>{children}</SessionProvider>
+        <SessionProvider>
+          {/* Outermost of the UI providers so any screen can confirm an action,
+              and inside the data providers so a confirmation can be raised from
+              a mutation callback. */}
+          <ToastProvider>{children}</ToastProvider>
+        </SessionProvider>
       </WalletProvider>
     </QueryClientProvider>
   )

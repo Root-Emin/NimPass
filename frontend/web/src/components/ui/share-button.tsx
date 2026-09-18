@@ -1,35 +1,51 @@
-import { Check, Link2, Share2 } from 'lucide-react'
+import { Check, Link2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import { Button, type ButtonProps } from '@/components/ui/button'
+import { useToast } from '@/components/ui/toast-context'
 
 /**
- * Shares the current page.
+ * Copies a link, and says so.
  *
- * Provider and package pages are public, shareable URLs (docs/08-ARCHITECTURE.md
- * §80), and a shared link opens its destination directly (§81). Uses the native
- * share sheet where the runtime offers one — which is the common case inside the
- * Nimiq Pay WebView — and falls back to copying the link.
+ * Share used to mean the system share sheet where one existed — which is most
+ * of the time inside the Nimiq Pay WebView. That is the wrong primary action
+ * for this product: a provider sharing their page is almost always pasting the
+ * link somewhere (a bio, a message they are already composing, a QR generator),
+ * and the sheet puts a modal chooser between them and the one thing they
+ * wanted. Worse, a dismissed sheet is indistinguishable from a failed one, so
+ * the button often appeared to do nothing at all.
+ *
+ * So: one tap, one clipboard write, one small confirmation. No chooser.
+ *
+ * `url` is passed in rather than read from `window.location` so the link is the
+ * page's *canonical* one. On a provider page those differ — the browser may be
+ * on `/providers/<uuid>` or carry query parameters, and what gets shared has to
+ * be the stable slug URL (`src/lib/provider-url.ts`).
+ *
+ * Clipboard access can legitimately fail: it needs a secure context, and LAN
+ * HTTP during Testnet testing on a phone is not one
+ * (docs/04-NIMIQ-MINI-APPS.md §47). That case falls back to a prompt holding
+ * the selectable URL rather than reporting a success that did not happen.
  */
 export function ShareButton({
-  title,
-  text,
+  url,
+  label = 'Share',
+  copiedMessage = 'Link copied',
   variant = 'secondary',
   size = 'sm',
   className,
 }: {
-  title: string
-  text?: string
+  /** The canonical URL to copy. Defaults to the current page. */
+  url?: string
+  label?: string
+  /** What the toast says on success. */
+  copiedMessage?: string
   variant?: ButtonProps['variant']
   size?: ButtonProps['size']
   className?: string
 }) {
-  // Feature detection: `navigator.share` is absent on most desktop browsers and
-  // present inside the Nimiq Pay WebView. Read once, during the first render.
-  const [canShare] = useState(
-    () => typeof navigator !== 'undefined' && typeof navigator.share === 'function',
-  )
   const [copied, setCopied] = useState(false)
+  const toast = useToast()
 
   useEffect(() => {
     if (!copied) return
@@ -37,39 +53,31 @@ export function ShareButton({
     return () => clearTimeout(timer)
   }, [copied])
 
-  const share = async () => {
-    const url = window.location.href
-
-    if (canShare) {
-      try {
-        await navigator.share({ title, text, url })
-        return
-      } catch {
-        // A dismissed share sheet is a normal outcome — fall through to copy.
-      }
-    }
+  const copy = async () => {
+    const target = url ?? (typeof window === 'undefined' ? '' : window.location.href)
 
     try {
-      await navigator.clipboard.writeText(url)
+      await navigator.clipboard.writeText(target)
       setCopied(true)
+      toast.show(copiedMessage, 'success')
     } catch {
-      // Clipboard can be blocked (notably on LAN HTTP, which is not a secure
-      // context — docs/04-NIMIQ-MINI-APPS.md §47). Select the URL instead.
-      window.prompt('Copy this link', url)
+      // Not a failure the person can act on by pressing again, so it does not
+      // become a toast: the URL itself is what they need, selectable.
+      window.prompt('Copy this link', target)
     }
   }
 
   return (
-    <Button variant={variant} size={size} className={className} onClick={() => void share()}>
+    <Button variant={variant} size={size} className={className} onClick={() => void copy()}>
       {copied ? (
         <>
           <Check aria-hidden="true" />
-          Link copied
+          {copiedMessage}
         </>
       ) : (
         <>
-          {canShare ? <Share2 aria-hidden="true" /> : <Link2 aria-hidden="true" />}
-          Share
+          <Link2 aria-hidden="true" />
+          {label}
         </>
       )}
     </Button>

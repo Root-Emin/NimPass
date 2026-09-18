@@ -2,9 +2,9 @@ import { screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { aProvider, mockApi, ok } from '@/test/mock-api'
-import { aPass } from '@/test/fixtures'
+import { aPurchasedPass } from '@/test/fixtures'
 import { renderApp, stubSession, stubWallet } from '@/test/render'
-import type { Pass } from '@/types/domain'
+import type { PurchasedPass } from '@/types/domain'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -13,7 +13,7 @@ afterEach(() => {
 const WALLET = stubWallet()
 const PROVIDER_ID = '00000000-0000-4000-8000-000000000002'
 
-const PASS = aPass()
+const PASS = aPurchasedPass()
 
 /**
  * The customer half — the standing invariants.
@@ -42,13 +42,13 @@ describe('customer session redemption', () => {
 
     renderApp(`/passes/${PASS.id}`, { wallet: WALLET, session: CUSTOMER })
 
-    await screen.findByRole('heading', { name: PASS.packageTitle, level: 1 })
+    await screen.findByRole('heading', { name: PASS.passTitle, level: 1 })
     expect(await screen.findByText('7')).toBeInTheDocument()
-    expect(screen.getByText(/of 10 sessions left/)).toBeInTheDocument()
+    expect(screen.getByText('3 of 10 used')).toBeInTheDocument()
   })
 
   it('offers no way to use a session on a completed pass', async () => {
-    const completed: Pass = {
+    const completed: PurchasedPass = {
       ...PASS,
       status: 'COMPLETED',
       usedSessions: 10,
@@ -66,10 +66,10 @@ describe('customer session redemption', () => {
       await screen.findByText('You have used every session on this pass.'),
     ).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Use a session/i })).not.toBeInTheDocument()
-    // Repurchase goes to the live package, on today's terms (docs/01 §56).
+    // Repurchase goes to the live catalog Pass, on today's terms (docs/01 §56).
     expect(screen.getByRole('link', { name: 'Buy again' })).toHaveAttribute(
       'href',
-      `/packages/${PASS.packageId}`,
+      `/pass/${PASS.passId}`,
     )
   })
 })
@@ -82,70 +82,65 @@ describe('customer session redemption', () => {
  * flow: no camera without asking, a typed path that always works, and no
  * control anywhere that could move a balance directly.
  */
-describe('provider session redemption', () => {
+describe('the provider is not part of a redemption', () => {
   const PROVIDER = stubSession()
   const WORKSPACE = {
     '/api/v1/providers': () => ok({ items: [aProvider({ id: PROVIDER_ID })] }),
   }
 
-  it('never asks for the camera just because the page loaded', async () => {
+  it('never asks for the camera, because nothing scans anything', async () => {
     const getUserMedia = vi.fn()
     vi.stubGlobal('navigator', {
       ...navigator,
       mediaDevices: { getUserMedia },
     })
 
-    mockApi(WORKSPACE)
-    renderApp('/provider/redeem', { wallet: WALLET, session: PROVIDER })
+    mockApi({
+      ...WORKSPACE,
+      [`/api/v1/providers/${PROVIDER_ID}/passes`]: () => ok({ items: [] }),
+      [`/api/v1/providers/${PROVIDER_ID}/services`]: () => ok({ items: [] }),
+    })
+    renderApp('/my-store', { wallet: WALLET, session: PROVIDER })
 
-    // Wait for the workspace to finish loading, so "nothing happened" is a
-    // real observation rather than the page not having rendered yet.
-    await screen.findByRole('button', { name: /Start scanning/i })
+    await screen.findByRole('heading', { name: 'My Store', level: 1 })
 
     // A permission prompt nobody asked for is exactly the confirmation fatigue
-    // docs/04-NIMIQ-MINI-APPS.md §55 rules out.
+    // docs/04-NIMIQ-MINI-APPS.md §55 rules out — and there is now nothing on
+    // any provider screen that would need one.
     expect(getUserMedia).not.toHaveBeenCalled()
   })
 
-  it('always offers the typed-code path, so redemption never needs a camera', async () => {
-    mockApi(WORKSPACE)
+  it('has no redemption screen to reach at all', async () => {
+    mockApi({
+      ...WORKSPACE,
+      [`/api/v1/providers/${PROVIDER_ID}/passes`]: () => ok({ items: [] }),
+      [`/api/v1/providers/${PROVIDER_ID}/services`]: () => ok({ items: [] }),
+    })
     renderApp('/provider/redeem', { wallet: WALLET, session: PROVIDER })
 
-    // Nimpass is web-first; a provider on a desktop must be able to redeem
-    // (docs/01-PRODUCT.md §25, §40).
-    expect(await screen.findByLabelText('Session code')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Look up code/i })).toBeInTheDocument()
+    // The old path redirects rather than 404s — it was linkable — but it
+    // leads to My Store, not to a way of spending someone's session.
+    await screen.findByRole('heading', { name: 'My Store', level: 1 })
+    expect(screen.queryByLabelText(/Session code/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Start scanning/i })).not.toBeInTheDocument()
   })
 
-  it('gives the provider no control that could change a balance directly', async () => {
-    mockApi(WORKSPACE)
-    const { container } = renderApp('/provider/redeem', {
+  it('gives the provider no control that could change a balance', async () => {
+    mockApi({
+      ...WORKSPACE,
+      [`/api/v1/providers/${PROVIDER_ID}/passes`]: () => ok({ items: [] }),
+      [`/api/v1/providers/${PROVIDER_ID}/services`]: () => ok({ items: [] }),
+    })
+    const { container } = renderApp('/my-store', {
       wallet: WALLET,
       session: PROVIDER,
     })
 
-    await screen.findByLabelText('Session code')
+    await screen.findByRole('heading', { name: 'My Store', level: 1 })
 
-    // Session balances move through one authorised backend operation and no
-    // other (docs/09-SECURITY.md §41). The only input on this screen is the
-    // code being looked up.
-    const inputs = Array.from(container.querySelectorAll('input'))
-    expect(inputs).toHaveLength(1)
-    expect(inputs[0]).toHaveAccessibleName('Session code')
-    expect(container.querySelector('input[type="number"]')).toBeNull()
-  })
-
-  it('keeps redemption one click from the workspace', async () => {
-    mockApi(WORKSPACE)
-    renderApp('/provider', { wallet: WALLET, session: PROVIDER })
-
-    // Redemption is the provider's most frequent in-person action and must not
-    // be buried (docs/02-USER-FLOWS.md §49).
-    const nav = await screen.findByRole('navigation', { name: 'Provider workspace' })
-    expect(nav).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Redeem' })).toHaveAttribute(
-      'href',
-      '/provider/redeem',
-    )
+    // Session balances move through one authorised backend operation, signed by
+    // the pass owner, and no other (docs/09-SECURITY.md §41). Nothing on a
+    // provider screen takes a code, a count, or a customer.
+    expect(container.querySelector('input')).toBeNull()
   })
 })

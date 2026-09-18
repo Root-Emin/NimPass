@@ -1,0 +1,888 @@
+#!/usr/bin/env bash
+
+# Nimpass local Testnet orchestrator.
+#
+# With no explicit NIMPASS_ENV_FILE, the launcher bootstraps an ignored local
+# Testnet environment, checks/starts local PostgreSQL, creates nimpass_test,
+# discovers the LAN address, and creates frontend/.env.local. Explicit env files
+# bypass those conveniences and still use the normal production safety checks.
+# This is not a production deployment; production needs a real HTTPS ingress,
+# secure cookies, a production database and an operational RPC endpoint.
+
+set -Eeuo pipefail
+
+ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_DIR="$ROOT_DIR/backend"
+FRONTEND_DIR="$ROOT_DIR/frontend/web"
+if [[ -f "$BACKEND_DIR/dev.sh" ]]; then
+  BACKEND_LAUNCHER="$BACKEND_DIR/dev.sh"
+else
+  # The checked-out repository currently has no backend/dev.sh. Keep the
+  # existing Testnet launcher as the explicit fallback rather than inventing a
+  # second backend startup path.
+  BACKEND_LAUNCHER="$BACKEND_DIR/start-testnet.sh"
+fi
+RUN_DIR="${NIMPASS_RUN_DIR:-$ROOT_DIR/.nimpass-run}"
+PID_FILE="$RUN_DIR/pids"
+SUPERVISOR_FILE="$RUN_DIR/supervisor"
+LOCAL_ENV_FILE="$BACKEND_DIR/.env.testnet.local"
+FRONTEND_ENV_FILE="$FRONTEND_DIR/.env.local"
+
+COMMAND="${1:-start}"
+BACKEND_PID=""
+FRONTEND_PID=""
+BACKEND_PGID=""
+FRONTEND_PGID=""
+CLEANED_UP=0
+LOCAL_BOOTSTRAP_ENABLED=0
+LAN_IP=""
+
+usage() {
+  cat <<'EOF'
+Usage: ./start.sh [start|stop|down|restart|status]
+
+start    Prepare local Testnet defaults, then build/serve frontend and backend (default).
+stop     Stop the launcher, both services, child processes, and leftover listeners.
+down     Alias for stop.
+restart  Stop the current services, then start them again.
+status   Show recorded PIDs and whether the service ports are still listening.
+
+Frontend mode defaults to a production build served by `npm run preview`.
+Set NIMPASS_FRONTEND_MODE=dev to use the existing `npm run dev` script instead.
+With no NIMPASS_ENV_FILE, local PostgreSQL/env/LAN defaults are prepared automatically.
+Set NIMPASS_ENV_FILE explicitly to use an existing environment without bootstrap.
+EOF
+}
+
+log() {
+  printf '[nimpass] %s\n' "$*"
+}
+
+fail() {
+  printf '[nimpass] ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+detect_lan_ip() {
+  local interface
+  local address
+
+  # macOS Wi-Fi/Ethernet interfaces are usually en0/en1. Prefer the default
+  # route when available so a disconnected adapter is not selected.
+  if command_exists route && command_exists ipconfig; then
+    interface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}' || true)"
+    if [[ -n "$interface" ]]; then
+      address="$(ipconfig getifaddr "$interface" 2>/dev/null || true)"
+      if [[ "$address" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$address" != 127.* ]]; then
+        printf '%s\n' "$address"
+        return 0
+      fi
+    fi
+  fi
+
+  if command_exists ip; then
+    address="$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i == "src") {print $(i+1); exit}}' || true)"
+    if [[ "$address" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$address" != 127.* ]]; then
+      printf '%s\n' "$address"
+      return 0
+    fi
+  fi
+
+  if command_exists ipconfig; then
+    for interface in en0 en1; do
+      address="$(ipconfig getifaddr "$interface" 2>/dev/null || true)"
+      if [[ "$address" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$address" != 127.* ]]; then
+        printf '%s\n' "$address"
+        return 0
+      fi
+    done
+  fi
+
+  if command_exists hostname; then
+    address="$(hostname -I 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i !~ /^127\./) {print $i; exit}}' || true)"
+    if [[ "$address" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$address" != 127.* ]]; then
+      printf '%s\n' "$address"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+bootstrap_local_environment() {
+  # An explicit env file is an operator decision. Do not create, edit, or
+  # infer values for it; this preserves production/deployment behavior.
+  if [[ -n "${NIMPASS_ENV_FILE:-}" ]]; then
+    return 0
+  fi
+
+  # An explicit production/Mainnet intent must never be shadowed by a local
+  # default file that happens to exist from an earlier development run.
+  if [[ "${APP_ENV:-}" == production || "${NIMIQ_NETWORK:-}" == MAINNET ]]; then
+    return 0
+  fi
+
+  LOCAL_BOOTSTRAP_ENABLED=1
+  LAN_IP="$(detect_lan_ip || true)"
+  [[ -n "$LAN_IP" ]] || fail "could not detect a LAN IPv4 address; connect this computer to the same network as the test phone"
+
+  local frontend_port="${NIMPASS_FRONTEND_PORT:-5173}"
+  [[ "$frontend_port" =~ ^[0-9]+$ ]] && ((frontend_port > 0 && frontend_port < 65536)) || fail "NIMPASS_FRONTEND_PORT must be between 1 and 65535"
+
+  if [[ ! -f "$LOCAL_ENV_FILE" ]]; then
+    local db_user
+    db_user="$(id -un 2>/dev/null || true)"
+    [[ "$db_user" =~ ^[A-Za-z0-9_.-]+$ ]] || fail "could not derive a safe local PostgreSQL role from the current user"
+    umask 077
+    cat > "$LOCAL_ENV_FILE" <<EOF
+# Generated by start.sh for local Nimiq Pay Testnet development.
+# This file is ignored by git. Edit only when you need a non-default local endpoint.
+APP_ENV=development
+HTTP_ADDR=:8080
+DATABASE_URL=postgres://${db_user}@127.0.0.1:5432/nimpass_test?sslmode=disable
+NIMIQ_NETWORK=TESTNET
+NIMIQ_RPC_URL=http://127.0.0.1:8648
+PUBLIC_ORIGIN=http://${LAN_IP}:${frontend_port}
+SESSION_COOKIE_MODE=local-insecure
+NIMIQ_SIGNING_SCHEME=raw
+EOF
+    log "Created local Testnet backend environment: $LOCAL_ENV_FILE"
+  else
+    log "Using existing local Testnet backend environment: $LOCAL_ENV_FILE"
+  fi
+}
+
+pid_is_alive() {
+  local pid="$1"
+  [[ "$pid" =~ ^[0-9]+$ ]] && [[ "$pid" -gt 0 ]] && kill -0 "$pid" 2>/dev/null
+}
+
+port_from_address() {
+  local address="$1"
+  if [[ "$address" =~ :([0-9]+)$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  fi
+}
+
+default_backend_port() {
+  local port
+  port="$(port_from_address "${HTTP_ADDR:-:8080}")"
+  printf '%s\n' "${port:-8080}"
+}
+
+default_frontend_port() {
+  printf '%s\n' "${NIMPASS_FRONTEND_PORT:-5173}"
+}
+
+pgid_of() {
+  local pid="$1"
+  local pgid
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  [[ "$pgid" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$pgid"
+}
+
+wait_until_group_leader() {
+  local pid="$1"
+  local i=0
+  local pgid=""
+  while [[ $i -lt 50 ]]; do
+    pgid="$(pgid_of "$pid" || true)"
+    if [[ "$pgid" == "$pid" ]]; then
+      printf '%s\n' "$pgid"
+      return 0
+    fi
+    sleep 0.05
+    i=$((i + 1))
+  done
+  printf '%s\n' "${pgid:-$pid}"
+}
+
+# macOS ships bash 3.2. A SIGTERM/SIGINT trap must not `wait` or use process
+# substitution: both deadlock in wait4, the launcher prints "shutting down",
+# and `go run` / Vite keep serving. Kill by PID/PGID, then sweep listeners.
+exec_as_group_leader() {
+  local perl_bin
+  perl_bin="$(command -v perl 2>/dev/null || true)"
+  if [[ -n "$perl_bin" ]]; then
+    exec "$perl_bin" -e 'setpgrp(0,0); exec @ARGV' -- "$@"
+  fi
+  exec "$@"
+}
+
+is_safe_service_pgid() {
+  local pgid="$1"
+  local leader="${2:-}"
+  local self_pgid=""
+  self_pgid="$(pgid_of $$ || true)"
+  [[ "$pgid" =~ ^[0-9]+$ ]] && [[ "$pgid" -gt 1 ]] || return 1
+  [[ "$pgid" != "$$" ]] || return 1
+  [[ -z "$self_pgid" || "$pgid" != "$self_pgid" ]] || return 1
+  # Only signal a group we created (the wrapper is the leader). Never kill the
+  # terminal's process group when perl setpgrp is unavailable.
+  if [[ -n "$leader" && "$pgid" != "$leader" ]]; then
+    return 1
+  fi
+  return 0
+}
+
+wait_until_dead() {
+  local tenths="$1"
+  shift
+  local i pid alive
+  [[ -n "${1:-}" ]] || return 0
+  i=0
+  while [[ $i -lt $tenths ]]; do
+    alive=0
+    for pid in "$@"; do
+      if pid_is_alive "$pid"; then
+        alive=1
+        break
+      fi
+    done
+    if [[ "$alive" == 0 ]]; then
+      return 0
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+collect_tree() {
+  local pid="$1"
+  local child
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  printf '%s\n' "$pid"
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    [[ "$child" =~ ^[0-9]+$ ]] || continue
+    collect_tree "$child"
+  done
+}
+
+stop_pid_tree() {
+  local pid="$1"
+  local tree p
+  [[ "$pid" =~ ^[0-9]+$ ]] && [[ "$pid" -gt 1 ]] || return 0
+  tree="$(collect_tree "$pid" | tr '\n' ' ')"
+  [[ -n "${tree// /}" ]] || return 0
+  for p in $tree; do
+    kill -TERM "$p" 2>/dev/null || true
+  done
+  if ! wait_until_dead 20 $tree; then
+    for p in $tree; do
+      kill -KILL "$p" 2>/dev/null || true
+    done
+    wait_until_dead 10 $tree || true
+  fi
+}
+
+stop_process_group() {
+  local pgid="$1"
+  local leader="${2:-}"
+  local remaining
+  is_safe_service_pgid "$pgid" "$leader" || return 0
+  kill -TERM -- "-$pgid" 2>/dev/null || true
+  remaining="$(pgrep -g "$pgid" 2>/dev/null | tr '\n' ' ' || true)"
+  if [[ -n "${remaining// /}" ]] && ! wait_until_dead 20 $remaining; then
+    kill -KILL -- "-$pgid" 2>/dev/null || true
+    remaining="$(pgrep -g "$pgid" 2>/dev/null | tr '\n' ' ' || true)"
+    if [[ -n "${remaining// /}" ]]; then
+      wait_until_dead 10 $remaining || true
+    fi
+  fi
+}
+
+service_listener_matches() {
+  local pid="$1"
+  local kind="$2"
+  local command_line cwd
+  command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')"
+  cwd="${cwd%%$'\n'*}"
+  case "$kind" in
+    frontend)
+      [[ "$cwd" == "$FRONTEND_DIR" || "$cwd" == "$FRONTEND_DIR"/* || "$command_line" == *"$FRONTEND_DIR"* ]]
+      ;;
+    backend)
+      [[ "$cwd" == "$BACKEND_DIR" || "$cwd" == "$BACKEND_DIR"/* || "$command_line" == *"$BACKEND_DIR"* || "$command_line" == *"cmd/server"* || "$command_line" == *"/exe/server"* ]]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+list_matching_listeners() {
+  local port="$1"
+  local kind="$2"
+  local pid pids
+  [[ "$port" =~ ^[0-9]+$ ]] || return 0
+  command_exists lsof || return 0
+  pids="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
+  for pid in $pids; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    if service_listener_matches "$pid" "$kind"; then
+      printf '%s\n' "$pid"
+    fi
+  done
+}
+
+stop_service_listener() {
+  local port="$1"
+  local kind="$2"
+  local pid
+  for pid in $(list_matching_listeners "$port" "$kind"); do
+    log "Stopping ${kind} listener PID $pid on port $port"
+    stop_pid_tree "$pid"
+  done
+}
+
+force_clear_service_ports() {
+  local backend_port="$1"
+  local frontend_port="$2"
+  stop_service_listener "$frontend_port" frontend
+  stop_service_listener "$backend_port" backend
+  if [[ "$frontend_port" != 5173 ]]; then
+    stop_service_listener 5173 frontend
+  fi
+  if [[ "$backend_port" != 8080 ]]; then
+    stop_service_listener 8080 backend
+  fi
+}
+
+read_recorded_pids() {
+  RECORDED_BACKEND_PID=""
+  RECORDED_FRONTEND_PID=""
+  RECORDED_BACKEND_PORT=""
+  RECORDED_FRONTEND_PORT=""
+  RECORDED_BACKEND_PGID=""
+  RECORDED_FRONTEND_PGID=""
+  [[ -f "$PID_FILE" ]] || return 0
+  read -r RECORDED_BACKEND_PID RECORDED_FRONTEND_PID RECORDED_BACKEND_PORT RECORDED_FRONTEND_PORT RECORDED_BACKEND_PGID RECORDED_FRONTEND_PGID < "$PID_FILE" || true
+}
+
+remove_run_record() {
+  rm -f "$PID_FILE" "$SUPERVISOR_FILE"
+  rmdir "$RUN_DIR" 2>/dev/null || true
+}
+
+stop_launcher_if_ours() {
+  local supervisor="$1"
+  local supervisor_command
+  [[ "$supervisor" != "$$" ]] && pid_is_alive "${supervisor:-0}" || return 0
+  supervisor_command="$(ps -p "$supervisor" -o command= 2>/dev/null || true)"
+  if [[ "$supervisor_command" != *start.sh* ]]; then
+    fail "Recorded launcher PID $supervisor now belongs to another process; refusing to stop it"
+  fi
+  log "Stopping launcher PID $supervisor"
+  # A trapped launcher can be stuck in wait(2). SIGTERM may be ignored there;
+  # escalate quickly so this command stays in control.
+  kill -TERM "$supervisor" 2>/dev/null || true
+  if ! wait_until_dead 10 "$supervisor"; then
+    log "Launcher did not exit; sending SIGKILL to PID $supervisor"
+    kill -KILL "$supervisor" 2>/dev/null || true
+    wait_until_dead 10 "$supervisor" || true
+  fi
+}
+
+stop_recorded_services() {
+  local supervisor=""
+  local backend_pid frontend_pid backend_port frontend_port backend_pgid frontend_pgid
+  local leftover leftover_fe leftover_be
+
+  read_recorded_pids
+  backend_pid="${RECORDED_BACKEND_PID:-}"
+  frontend_pid="${RECORDED_FRONTEND_PID:-}"
+  backend_port="${RECORDED_BACKEND_PORT:-$(default_backend_port)}"
+  frontend_port="${RECORDED_FRONTEND_PORT:-$(default_frontend_port)}"
+  backend_pgid="${RECORDED_BACKEND_PGID:-}"
+  frontend_pgid="${RECORDED_FRONTEND_PGID:-}"
+  if [[ -f "$SUPERVISOR_FILE" ]]; then
+    read -r supervisor < "$SUPERVISOR_FILE" || true
+  fi
+
+  stop_launcher_if_ours "$supervisor"
+
+  if [[ -n "$frontend_pid" || -n "$frontend_pgid" ]]; then
+    log "Stopping frontend (PID ${frontend_pid:-unknown}, PGID ${frontend_pgid:-unknown})"
+  fi
+  stop_process_group "$frontend_pgid" "$frontend_pid"
+  stop_pid_tree "$frontend_pid"
+  if [[ -n "$backend_pid" || -n "$backend_pgid" ]]; then
+    log "Stopping backend (PID ${backend_pid:-unknown}, PGID ${backend_pgid:-unknown})"
+  fi
+  stop_process_group "$backend_pgid" "$backend_pid"
+  stop_pid_tree "$backend_pid"
+  force_clear_service_ports "$backend_port" "$frontend_port"
+
+  leftover_fe="$(list_matching_listeners "$frontend_port" frontend | tr '\n' ' ')"
+  leftover_be="$(list_matching_listeners "$backend_port" backend | tr '\n' ' ')"
+  leftover="${leftover_fe}${leftover_be}"
+  remove_run_record
+  if [[ -n "${leftover// /}" ]]; then
+    fail "Nimpass listeners are still bound: frontend ${leftover_fe:-none} on ${frontend_port}; backend ${leftover_be:-none} on ${backend_port}"
+  fi
+  log "All Nimpass services stopped."
+}
+
+show_status() {
+  local backend_port frontend_port
+  local backend_state="stopped"
+  local frontend_state="stopped"
+  local backend_listeners frontend_listeners
+  read_recorded_pids
+  backend_port="${RECORDED_BACKEND_PORT:-$(default_backend_port)}"
+  frontend_port="${RECORDED_FRONTEND_PORT:-$(default_frontend_port)}"
+  pid_is_alive "${RECORDED_BACKEND_PID:-0}" && backend_state="running"
+  pid_is_alive "${RECORDED_FRONTEND_PID:-0}" && frontend_state="running"
+  backend_listeners="$(list_matching_listeners "$backend_port" backend | tr '\n' ' ')"
+  frontend_listeners="$(list_matching_listeners "$frontend_port" frontend | tr '\n' ' ')"
+  if [[ -z "$RECORDED_BACKEND_PID" && -z "$RECORDED_FRONTEND_PID" && -z "${backend_listeners// /}" && -z "${frontend_listeners// /}" ]]; then
+    log "stopped (no PID record, ports ${backend_port}/${frontend_port} free)"
+    return 0
+  fi
+  log "backend:  $backend_state (PID ${RECORDED_BACKEND_PID:-none}, port ${backend_port}, listeners ${backend_listeners:-none})"
+  log "frontend: $frontend_state (PID ${RECORDED_FRONTEND_PID:-none}, port ${frontend_port}, listeners ${frontend_listeners:-none})"
+  if [[ -n "${backend_listeners// /}" || -n "${frontend_listeners// /}" ]]; then
+    return 1
+  fi
+  if [[ "$backend_state" == running || "$frontend_state" == running ]]; then
+    return 0
+  fi
+  return 1
+}
+
+load_environment() {
+  local env_file="${NIMPASS_ENV_FILE:-$BACKEND_DIR/.env.testnet.local}"
+  if [[ "$env_file" != /* ]]; then
+    env_file="$ROOT_DIR/$env_file"
+  fi
+  local had_app_env=0 saved_app_env=""
+  local had_http_addr=0 saved_http_addr=""
+  local had_database_url=0 saved_database_url=""
+  local had_network=0 saved_network=""
+  local had_rpc_url=0 saved_rpc_url=""
+  local had_public_origin=0 saved_public_origin=""
+  local had_cookie_mode=0 saved_cookie_mode=""
+  local had_signing_scheme=0 saved_signing_scheme=""
+  local had_migrations_dir=0 saved_migrations_dir=""
+  if [[ ${APP_ENV+x} ]]; then had_app_env=1; saved_app_env="$APP_ENV"; fi
+  if [[ ${HTTP_ADDR+x} ]]; then had_http_addr=1; saved_http_addr="$HTTP_ADDR"; fi
+  if [[ ${DATABASE_URL+x} ]]; then had_database_url=1; saved_database_url="$DATABASE_URL"; fi
+  if [[ ${NIMIQ_NETWORK+x} ]]; then had_network=1; saved_network="$NIMIQ_NETWORK"; fi
+  if [[ ${NIMIQ_RPC_URL+x} ]]; then had_rpc_url=1; saved_rpc_url="$NIMIQ_RPC_URL"; fi
+  if [[ ${PUBLIC_ORIGIN+x} ]]; then had_public_origin=1; saved_public_origin="$PUBLIC_ORIGIN"; fi
+  if [[ ${SESSION_COOKIE_MODE+x} ]]; then had_cookie_mode=1; saved_cookie_mode="$SESSION_COOKIE_MODE"; fi
+  if [[ ${NIMIQ_SIGNING_SCHEME+x} ]]; then had_signing_scheme=1; saved_signing_scheme="$NIMIQ_SIGNING_SCHEME"; fi
+  if [[ ${MIGRATIONS_DIR+x} ]]; then had_migrations_dir=1; saved_migrations_dir="$MIGRATIONS_DIR"; fi
+  if [[ -f "$env_file" ]]; then
+    log "Loading environment from $env_file"
+    set -a
+    # shellcheck disable=SC1090
+    . "$env_file"
+    set +a
+  fi
+  # Shell-provided values remain authoritative over an auto-generated or
+  # explicitly selected env file, matching standard process environment rules.
+  [[ "$had_app_env" == 1 ]] && export APP_ENV="$saved_app_env"
+  [[ "$had_http_addr" == 1 ]] && export HTTP_ADDR="$saved_http_addr"
+  [[ "$had_database_url" == 1 ]] && export DATABASE_URL="$saved_database_url"
+  [[ "$had_network" == 1 ]] && export NIMIQ_NETWORK="$saved_network"
+  [[ "$had_rpc_url" == 1 ]] && export NIMIQ_RPC_URL="$saved_rpc_url"
+  [[ "$had_public_origin" == 1 ]] && export PUBLIC_ORIGIN="$saved_public_origin"
+  [[ "$had_cookie_mode" == 1 ]] && export SESSION_COOKIE_MODE="$saved_cookie_mode"
+  [[ "$had_signing_scheme" == 1 ]] && export NIMIQ_SIGNING_SCHEME="$saved_signing_scheme"
+  [[ "$had_migrations_dir" == 1 ]] && export MIGRATIONS_DIR="$saved_migrations_dir"
+  export NIMPASS_ENV_FILE="$env_file"
+
+  # These defaults match backend/start-testnet.sh. The root launcher keeps the
+  # safety boundary explicit and never permits an accidental Mainnet run.
+  export APP_ENV="${APP_ENV:-development}"
+  export NIMIQ_NETWORK="${NIMIQ_NETWORK:-TESTNET}"
+  export SESSION_COOKIE_MODE="${SESSION_COOKIE_MODE:-local-insecure}"
+  export NIMIQ_SIGNING_SCHEME="${NIMIQ_SIGNING_SCHEME:-raw}"
+  export HTTP_ADDR="${HTTP_ADDR:-:8080}"
+  export MIGRATIONS_DIR="${MIGRATIONS_DIR:-$BACKEND_DIR/migrations}"
+  export MEDIA_DIR="${MEDIA_DIR:-$BACKEND_DIR/var/media}"
+
+  [[ "$APP_ENV" != production ]] || fail "start.sh is Testnet-safe and refuses APP_ENV=production"
+  [[ "$NIMIQ_NETWORK" == TESTNET ]] || fail "start.sh requires NIMIQ_NETWORK=TESTNET"
+  : "${DATABASE_URL:?Set DATABASE_URL in $env_file or the shell}"
+  : "${NIMIQ_RPC_URL:?Set NIMIQ_RPC_URL to a trusted Testnet RPC endpoint}"
+  : "${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN to the frontend origin, for example http://192.168.1.42:5173}"
+
+  # Vite reads frontend/.env files itself. These process-level values ensure a
+  # full-system run never silently falls back to catalogue presentation fixtures
+  # and that the frontend build uses the same network as the backend.
+  export VITE_APP_ENV="$APP_ENV"
+  export VITE_DEV_FIXTURES=0
+  export VITE_NIMIQ_NETWORK="$NIMIQ_NETWORK"
+}
+
+check_layout_and_tools() {
+  [[ -f "$BACKEND_LAUNCHER" ]] || fail "missing backend launcher: $BACKEND_LAUNCHER"
+  [[ -f "$FRONTEND_DIR/package.json" ]] || fail "missing frontend package.json: $FRONTEND_DIR/package.json"
+  [[ -f "$FRONTEND_DIR/package-lock.json" ]] || fail "missing frontend package-lock.json"
+  [[ -d "$FRONTEND_DIR/node_modules" ]] || fail "frontend dependencies are missing; run npm ci in $FRONTEND_DIR"
+  command_exists go || fail "Go is required; install the version declared by backend/go.mod"
+  command_exists npm || fail "npm is required; install Node.js before starting the frontend"
+  command_exists curl || fail "curl is required for startup readiness checks"
+  command_exists lsof || fail "lsof is required for safe orphan-process cleanup"
+}
+
+check_postgres_tools() {
+  command_exists pg_isready || fail "pg_isready is required for local PostgreSQL checks; install PostgreSQL first"
+  command_exists psql || fail "psql is required for local PostgreSQL checks; install PostgreSQL first"
+  command_exists createdb || fail "createdb is required to create nimpass_test; install PostgreSQL first"
+}
+
+local_database_parts() {
+  # Auto-management is deliberately limited to the generated loopback URL.
+  # Custom URLs may contain credentials, managed hosts, TLS settings, or a
+  # database owned by another deployment and must remain operator-controlled.
+  LOCAL_DB_USER=""
+  LOCAL_DB_HOST=""
+  LOCAL_DB_PORT=""
+  LOCAL_DB_NAME=""
+  if [[ "$DATABASE_URL" =~ ^postgres(ql)?://([^:/@?]+)(:[^@?]*)?@(localhost|127\.0\.0\.1)(:([0-9]+))?/([^?]+)(\?.*)?$ ]]; then
+    LOCAL_DB_USER="${BASH_REMATCH[2]}"
+    LOCAL_DB_HOST="${BASH_REMATCH[4]}"
+    LOCAL_DB_PORT="${BASH_REMATCH[6]:-5432}"
+    LOCAL_DB_NAME="${BASH_REMATCH[7]}"
+    [[ -z "${BASH_REMATCH[3]:-}" && "$LOCAL_DB_NAME" == nimpass_test ]]
+    return
+  fi
+  return 1
+}
+
+start_homebrew_postgres() {
+  local formula
+  for formula in postgresql@17 postgresql@16 postgresql@15 postgresql@14 postgresql; do
+    if brew list --formula "$formula" >/dev/null 2>&1; then
+      log "PostgreSQL is not accepting connections; starting Homebrew service $formula"
+      brew services start "$formula" >/dev/null || fail "could not start Homebrew PostgreSQL service $formula"
+      return 0
+    fi
+  done
+  return 1
+}
+
+start_system_postgres() {
+  if command_exists systemctl; then
+    if systemctl --user start postgresql >/dev/null 2>&1 || systemctl start postgresql >/dev/null 2>&1; then
+      log "Started PostgreSQL through systemd"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+wait_for_postgres() {
+  local host="$1"
+  local port="$2"
+  local user="$3"
+  for _ in {1..30}; do
+    if pg_isready -h "$host" -p "$port" -U "$user" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+ensure_local_postgres() {
+  [[ "$LOCAL_BOOTSTRAP_ENABLED" == 1 ]] || return 0
+  check_postgres_tools
+
+  if ! local_database_parts; then
+    log "DATABASE_URL is custom; leaving its PostgreSQL lifecycle and database creation to the configured environment."
+    return 0
+  fi
+
+  if ! pg_isready -h "$LOCAL_DB_HOST" -p "$LOCAL_DB_PORT" -U "$LOCAL_DB_USER" >/dev/null 2>&1; then
+    local started=1
+    if command_exists brew; then
+      start_homebrew_postgres || started=0
+    elif command_exists systemctl; then
+      start_system_postgres || started=0
+    else
+      started=0
+    fi
+    if [[ "$started" != 1 ]] || ! wait_for_postgres "$LOCAL_DB_HOST" "$LOCAL_DB_PORT" "$LOCAL_DB_USER"; then
+      fail "PostgreSQL is not running on ${LOCAL_DB_HOST}:${LOCAL_DB_PORT}; install/start PostgreSQL (for macOS: brew install postgresql@15 && brew services start postgresql@15)"
+    fi
+  else
+    log "PostgreSQL is ready on ${LOCAL_DB_HOST}:${LOCAL_DB_PORT}"
+  fi
+
+  if ! psql -X -v ON_ERROR_STOP=1 -h "$LOCAL_DB_HOST" -p "$LOCAL_DB_PORT" -U "$LOCAL_DB_USER" -d postgres -Atqc "SELECT 1 FROM pg_database WHERE datname='nimpass_test'" | grep -qx '1'; then
+    log "Creating local PostgreSQL database nimpass_test"
+    createdb -h "$LOCAL_DB_HOST" -p "$LOCAL_DB_PORT" -U "$LOCAL_DB_USER" nimpass_test || fail "could not create local database nimpass_test"
+  else
+    log "Local PostgreSQL database nimpass_test is ready"
+  fi
+}
+
+ensure_frontend_local_environment() {
+  [[ "$LOCAL_BOOTSTRAP_ENABLED" == 1 ]] || return 0
+  local frontend_port="${NIMPASS_FRONTEND_PORT:-5173}"
+  local backend_port
+  backend_port="$(port_from_address "$HTTP_ADDR")"
+  [[ "$backend_port" =~ ^[0-9]+$ ]] || fail "HTTP_ADDR must contain a usable TCP port: $HTTP_ADDR"
+
+  if [[ ! -f "$FRONTEND_ENV_FILE" ]]; then
+    umask 077
+    cat > "$FRONTEND_ENV_FILE" <<EOF
+# Generated by start.sh for local Nimiq Pay Testnet development.
+# This file is ignored by git.
+#
+# The API base is a same-origin path, never an absolute LAN URL. Nimiq Pay runs
+# the mini app in a mobile WebView; a cross-origin API host makes the session a
+# cross-origin cookie, which the WebView is free to drop, and the login then
+# fails with "the browser did not keep the session cookie". Requests go to
+# /api on the page origin and Vite forwards them to the backend below, so the
+# HttpOnly session cookie stays first-party. No LAN IP is stored here: the
+# address changes with DHCP and a stale value silently breaks the phone.
+VITE_API_BASE_URL=/
+NIMPASS_LOCAL_API_PROXY=http://127.0.0.1:${backend_port}
+VITE_NIMIQ_NETWORK=TESTNET
+VITE_DEV_FIXTURES=0
+EOF
+    log "Created local frontend environment: $FRONTEND_ENV_FILE"
+  else
+    log "Using existing local frontend environment: $FRONTEND_ENV_FILE"
+    # A stored absolute API URL only takes effect for builds run outside this
+    # launcher, which is exactly how a cross-origin bundle gets served to the
+    # phone. Say so instead of letting it fail silently in the WebView.
+    if grep -qE '^VITE_API_BASE_URL=https?://' "$FRONTEND_ENV_FILE"; then
+      log "WARNING: $FRONTEND_ENV_FILE pins an absolute VITE_API_BASE_URL. This launcher overrides it with the same-origin proxy, but a manual 'npm run build' would bake a cross-origin API host into the bundle and Nimiq Pay's WebView can then drop the session cookie. Set VITE_API_BASE_URL=/ in that file."
+    fi
+  fi
+
+  # Process values take precedence over Vite .env files. This keeps the API
+  # host aligned with the current LAN address even after a DHCP address change.
+  # Local-only same-origin proxy keeps HttpOnly cookies on the page host.
+  # Recompute LAN-derived values on every run, including DHCP changes.
+  export PUBLIC_ORIGIN="http://${LAN_IP}:${frontend_port}"
+  export VITE_PUBLIC_ORIGIN="$PUBLIC_ORIGIN"
+  export VITE_API_BASE_URL=/
+  export NIMPASS_LOCAL_API_PROXY="http://127.0.0.1:${backend_port}"
+  export VITE_NIMIQ_NETWORK="$NIMIQ_NETWORK"
+}
+
+log_local_rpc_hint() {
+  [[ "$LOCAL_BOOTSTRAP_ENABLED" == 1 ]] || return 0
+  if [[ "$NIMIQ_RPC_URL" == "http://127.0.0.1:8648" ]]; then
+    if ! curl -fsS --max-time 2 "$NIMIQ_RPC_URL" -H 'Content-Type: application/json' --data '{"jsonrpc":"2.0","method":"getNetworkId","params":[],"id":1}' 2>/dev/null | grep -q 'TestAlbatross'; then
+      log "WARNING: local Nimiq RPC is not answering as Testnet at $NIMIQ_RPC_URL; browsing/login can start, but real payments cannot reconcile. Start the local node with ./scripts/testnet-node.sh start (then ./scripts/testnet-node.sh status), or point NIMIQ_RPC_URL at another synced Testnet node."
+    else
+      log "Nimiq Testnet RPC is reachable at $NIMIQ_RPC_URL"
+    fi
+  fi
+}
+
+prepare_run_record() {
+  if [[ -d "$RUN_DIR" ]]; then
+    local supervisor=""
+    if [[ -f "$SUPERVISOR_FILE" ]]; then read -r supervisor < "$SUPERVISOR_FILE" || true; fi
+    if pid_is_alive "${supervisor:-0}"; then
+      fail "Nimpass is already starting/running (launcher PID $supervisor); use ./start.sh stop"
+    fi
+    read_recorded_pids
+    if pid_is_alive "${RECORDED_BACKEND_PID:-0}" || pid_is_alive "${RECORDED_FRONTEND_PID:-0}"; then
+      fail "Nimpass is already running; use ./start.sh status or ./start.sh stop"
+    fi
+    # A SIGKILL or host shutdown can leave the child listener alive after its
+    # recorded parent PID disappears. Sweep known ports before discarding state.
+    force_clear_service_ports "${RECORDED_BACKEND_PORT:-$(default_backend_port)}" "${RECORDED_FRONTEND_PORT:-$(default_frontend_port)}"
+    rm -f "$PID_FILE" "$SUPERVISOR_FILE"
+    rmdir "$RUN_DIR" 2>/dev/null || fail "cannot clear stale launcher state: $RUN_DIR"
+  fi
+  mkdir "$RUN_DIR"
+  mkdir -p "$MEDIA_DIR"
+  printf '%s\n' "$$" > "$SUPERVISOR_FILE"
+}
+
+build_frontend() {
+  local frontend_mode="${NIMPASS_FRONTEND_MODE:-preview}"
+  case "$frontend_mode" in
+    preview)
+      log "Building frontend with: npm run build"
+      (cd "$FRONTEND_DIR" && npm run build)
+      ;;
+    dev)
+      log "Frontend mode=dev; skipping production build"
+      ;;
+    *)
+      fail "NIMPASS_FRONTEND_MODE must be preview or dev"
+      ;;
+  esac
+}
+
+start_services() {
+  local frontend_mode="${NIMPASS_FRONTEND_MODE:-preview}"
+  local frontend_port="${NIMPASS_FRONTEND_PORT:-5173}"
+  local backend_port
+  backend_port="$(port_from_address "$HTTP_ADDR")"
+  [[ "$backend_port" =~ ^[0-9]+$ ]] && ((backend_port > 0 && backend_port < 65536)) || fail "HTTP_ADDR must contain a usable TCP port: $HTTP_ADDR"
+  [[ "$frontend_port" =~ ^[0-9]+$ ]] && ((frontend_port > 0 && frontend_port < 65536)) || fail "NIMPASS_FRONTEND_PORT must be between 1 and 65535"
+
+  prepare_run_record
+  trap cleanup EXIT
+  trap 'handle_signal INT' INT
+  trap 'handle_signal TERM' TERM
+  trap 'handle_signal HUP' HUP
+
+  build_frontend
+
+  log "Starting backend via ${BACKEND_LAUNCHER#"$ROOT_DIR/"} on HTTP $HTTP_ADDR"
+  (
+    cd "$BACKEND_DIR"
+    # Environment was already loaded/validated; do not source stale LAN values again.
+    export NIMPASS_ENV_FILE=/dev/null
+    exec_as_group_leader bash "$BACKEND_LAUNCHER"
+  ) &
+  BACKEND_PID=$!
+  BACKEND_PGID="$(wait_until_group_leader "$BACKEND_PID")"
+
+  if ! pid_is_alive "$BACKEND_PID"; then
+    fail "backend exited during startup; inspect the backend error above"
+  fi
+
+  if [[ "$frontend_mode" == preview ]]; then
+    log "Starting frontend via npm run preview on port $frontend_port"
+    (
+      cd "$FRONTEND_DIR"
+      exec_as_group_leader npm run preview -- --host --port "$frontend_port" --strictPort
+    ) &
+  else
+    log "Starting frontend via npm run dev on port $frontend_port"
+    (
+      cd "$FRONTEND_DIR"
+      exec_as_group_leader npm run dev -- --host --port "$frontend_port" --strictPort
+    ) &
+  fi
+  FRONTEND_PID=$!
+  FRONTEND_PGID="$(wait_until_group_leader "$FRONTEND_PID")"
+
+  printf '%s %s %s %s %s %s\n' "$BACKEND_PID" "$FRONTEND_PID" "$backend_port" "$frontend_port" "$BACKEND_PGID" "$FRONTEND_PGID" > "$PID_FILE"
+  wait_for_http "backend" "http://127.0.0.1:$backend_port/health/ready" "$BACKEND_PID"
+  wait_for_http "frontend" "http://127.0.0.1:$frontend_port/" "$FRONTEND_PID"
+  log "Backend PID=$BACKEND_PID PGID=$BACKEND_PGID; frontend PID=$FRONTEND_PID PGID=$FRONTEND_PGID"
+  log "Frontend URL (desktop and phone): $PUBLIC_ORIGIN"
+  log "Nimiq Pay Custom URL: ${PUBLIC_ORIGIN:-http://${LAN_IP:-127.0.0.1}:$frontend_port}"
+  log "Press Ctrl+C to stop both process trees."
+
+  monitor_services
+}
+
+wait_for_http() {
+  local service="$1"
+  local url="$2"
+  local pid="$3"
+  for _ in {1..60}; do
+    if ! pid_is_alive "$pid"; then
+      fail "$service exited before readiness check succeeded"
+    fi
+    if curl -fsS --max-time 1 -o /dev/null "$url" 2>/dev/null; then
+      log "$service is ready: $url"
+      return 0
+    fi
+    sleep 0.5
+  done
+  fail "$service did not become ready within 30 seconds: $url"
+}
+
+monitor_services() {
+  local exited_service
+  local exited_pid
+  local exit_code
+  while true; do
+    if ! pid_is_alive "$BACKEND_PID"; then
+      exited_service="backend"
+      exited_pid="$BACKEND_PID"
+      if wait "$BACKEND_PID"; then exit_code=0; else exit_code=$?; fi
+    elif ! pid_is_alive "$FRONTEND_PID"; then
+      exited_service="frontend"
+      exited_pid="$FRONTEND_PID"
+      if wait "$FRONTEND_PID"; then exit_code=0; else exit_code=$?; fi
+    else
+      sleep 1
+      continue
+    fi
+
+    log "${exited_service} process (PID ${exited_pid}) exited with status ${exit_code}; stopping the other service."
+    stop_process_group "$FRONTEND_PGID" "$FRONTEND_PID"
+    stop_pid_tree "$FRONTEND_PID"
+    stop_process_group "$BACKEND_PGID" "$BACKEND_PID"
+    stop_pid_tree "$BACKEND_PID"
+    force_clear_service_ports "$(port_from_address "${HTTP_ADDR:-:8080}")" "${NIMPASS_FRONTEND_PORT:-5173}"
+    return 1
+  done
+}
+
+cleanup() {
+  [[ "$CLEANED_UP" == 0 ]] || return 0
+  CLEANED_UP=1
+  set +e
+  stop_process_group "$FRONTEND_PGID" "$FRONTEND_PID"
+  stop_pid_tree "$FRONTEND_PID"
+  stop_process_group "$BACKEND_PGID" "$BACKEND_PID"
+  stop_pid_tree "$BACKEND_PID"
+  force_clear_service_ports "$(default_backend_port)" "$(default_frontend_port)"
+  remove_run_record
+}
+
+handle_signal() {
+  local signal="$1"
+  local status=1
+  trap - INT TERM HUP EXIT
+  log "Received SIG${signal}; shutting down backend and frontend."
+  cleanup
+  case "$signal" in
+    INT) status=130 ;;
+    TERM) status=143 ;;
+    HUP) status=129 ;;
+  esac
+  exit "$status"
+}
+
+case "$COMMAND" in
+  start)
+    bootstrap_local_environment
+    load_environment
+    ensure_frontend_local_environment
+    check_layout_and_tools
+    ensure_local_postgres
+    log_local_rpc_hint
+    start_services
+    ;;
+  stop|down)
+    stop_recorded_services
+    ;;
+  restart)
+    stop_recorded_services
+    bootstrap_local_environment
+    load_environment
+    ensure_frontend_local_environment
+    check_layout_and_tools
+    ensure_local_postgres
+    log_local_rpc_hint
+    start_services
+    ;;
+  status)
+    show_status
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

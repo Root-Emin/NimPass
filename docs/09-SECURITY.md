@@ -119,7 +119,7 @@ authentication sessions
 Attackers must not be able to:
 
 ```text
-change package price
+change Pass price
 
 change payment recipient
 
@@ -325,13 +325,13 @@ Nimiq Pay can establish wallet-mediated cryptographic actions.
 It does not know:
 
 ```text
-which provider owns package X
+which provider owns Pass X
 
 whether pass Y is active
 
 whether redemption Z was already used
 
-whether package A contains 10 sessions
+whether Pass A contains 10 sessions
 
 whether user B may manage provider C
 ```
@@ -667,7 +667,22 @@ Never reuse identical signing messages between security domains.
 
 A provider must prove control of the payout wallet before it can become trusted.
 
-Flow:
+The **first** payout wallet is the wallet that signed in, and the proof is the
+login itself (`DECISIONS.md` ADR-025):
+
+```text
+AUTH_LOGIN challenge signed  ← control of this wallet is proven here
+        ↓
+identities.wallet_address
+        ↓
+POST /providers   → payout_wallet := the session identity's wallet, VERIFIED
+```
+
+The address is derived server-side from the session. No request body may name a
+payout wallet, so a caller cannot propose an address at all.
+
+**Changing** it to any other wallet is a wallet the login proof says nothing
+about, and still requires the full ceremony:
 
 ```text
 Provider chooses payout wallet
@@ -750,7 +765,7 @@ depending on final provider-auth model.
 Purchase security depends on:
 
 ```text
-trusted package data
+trusted Pass data
 
 trusted payout recipient
 
@@ -764,6 +779,20 @@ atomic pass creation
 ```
 
 The frontend cannot establish any of these alone.
+
+Two purchases are refused before any payment is requested, both decided
+server-side against rows read under the same lock that produces the price:
+
+```text
+the payee is the buying wallet
+
+the customer already holds a live pass for this Pass
+```
+
+The first is the wallet half of "a provider cannot buy their own"
+(`DECISIONS.md` ADR-012): the account check cannot see it, because a payout
+wallet need not be the owner's login wallet. A payment that returns to its own
+sender moves nothing and must never issue a Pass.
 
 ---
 
@@ -786,10 +815,17 @@ transaction acceptable under confirmation policy
 
 transaction hash not already used
 
+sender is not the recipient
+
 purchase intent valid
 
 purchase not already completed
 ```
+
+`sender is not the recipient` is not a sender gate. Which account paid is
+deliberately not correlated (`DECISIONS.md` ADR-013); this asks only whether
+any value moved, because the paying address is chosen inside the wallet and is
+the one value the intent could not have checked.
 
 This requirement is defined in detail in:
 
@@ -961,7 +997,7 @@ purchaseId
 
 providerId
 
-packageId
+passId
 
 redemptionId
 ```
@@ -1013,7 +1049,7 @@ provider membership/ownership permission
 Example:
 
 ```text
-POST updatePackage(providerA, packageX)
+POST updatePass(providerA, passX)
 ```
 
 must establish that the current actor may manage:
@@ -1025,7 +1061,7 @@ providerA
 and that:
 
 ```text
-packageX belongs to providerA
+passX belongs to providerA
 ```
 
 ---
@@ -1205,9 +1241,60 @@ Session balances change through defined domain operations such as:
 
 ```text
 successful redemption
+provider-recorded session completion
 ```
 
 If future manual adjustment exists, it requires a separate audited privileged workflow.
+
+## 41a. Known risk — a provider can spend sessions without the customer
+
+`DECISIONS.md` ADR-012 gives the provider `POST /pass-sessions/{id}/complete`,
+and it is deliberate: the provider is the party who knows a session was
+delivered, and the owner's own route to spending one is the wallet signature
+ADR-007 is built on. A plain `POST` from the owner is refused with 403 for
+exactly that reason.
+
+The consequence is stated here rather than left implicit. **Nothing in the
+product requires the customer's agreement before a session is spent this way,
+and nothing lets them dispute it afterwards.** A provider can take a ten-session
+pass to zero in ten requests. The only limit is the rate limiter, which is a
+burst guard and not a consent mechanism.
+
+What constrains it today:
+
+```text
+only the pass's own provider identity may do it
+    (purchased_passes.provider_identity_id, checked under the row lock)
+
+it cannot exceed what was sold
+    (used + remaining = original, remaining >= 0, one COMPLETED row per increment)
+
+it cannot touch an expired, completed or cancelled pass
+
+every completion is recorded
+```
+
+What the record contains, and what it does not, is asserted by
+`TestAProviderRecordedCompletionLeavesAFullRecord`:
+
+| Fact | Where it lives |
+| --- | --- |
+| which session | `pass_sessions.id`, `sequence_number` |
+| when | `pass_sessions.completed_at`, `redemption_events.occurred_at` |
+| by which route | `pass_sessions.completed_by = 'PROVIDER'`, `redemption_id` NULL |
+| which account was entitled to | `purchased_passes.provider_identity_id` |
+| which pass and provider | `redemption_events.pass_id`, `provider_id` |
+
+Two things are **not** on the event row: the session it refers to, and the
+identity that acted. Both are recoverable — the session by its own
+`completed_at`, the identity from the pass, since no other account can reach
+this path — but a reader reconstructing history has to join for them rather
+than read them.
+
+Customer approval and a dispute route are a separate product decision and are
+deliberately not part of this. Until one exists, the mitigation is the record
+above plus the fact that the customer sees every completion on the same pass
+screen the provider writes it from (`01-PRODUCT.md §33`, shared state).
 
 ---
 
@@ -1312,6 +1399,16 @@ REJECTED
 A consumed challenge can never consume another session.
 
 ---
+
+> **Sections 45-48 are superseded by `DECISIONS.md` ADR-007.** Nimpass issues
+> no QR and no bearer reference of any kind. A session is spent by the pass
+> owner's own Ed25519 signature over the backend's canonical
+> `AUTHORIZE_REDEMPTION` message, consumed in the same transaction that verifies
+> it — so there is no copyable artefact to screenshot, replay or expire. The
+> threat model below is kept for the record, and the properties it demanded
+> (single use, short TTL, wallet-linked authorization, stale-context rejection)
+> are all still enforced; they are simply enforced on the challenge itself
+> rather than on a token derived from it.
 
 # 45. QR Contents
 
@@ -1806,9 +1903,9 @@ Provider capabilities must use explicit role/policy checks.
 Examples:
 
 ```text
-create package
+create Pass
 
-edit own package
+edit own Pass
 
 view own provider passes
 
@@ -2027,7 +2124,7 @@ Examples:
 ```text
 provider names
 
-package titles
+Pass titles
 
 descriptions
 
@@ -2069,7 +2166,7 @@ Provider-controlled text such as:
 ```text
 provider description
 
-package description
+Pass description
 
 service name
 ```
@@ -2369,7 +2466,7 @@ provider public profile
 
 provider payout-wallet mapping
 
-package data
+Pass data
 
 purchase state
 
@@ -2405,9 +2502,9 @@ public description
 
 public services
 
-published packages
+published Passes
 
-NIM package price
+NIM Pass price
 ```
 
 ## Private
@@ -2746,7 +2843,7 @@ provider wallet verified
 
 provider wallet changed
 
-package payment confirmed
+Pass payment confirmed
 
 pass created
 
@@ -2894,7 +2991,7 @@ Tests must include:
 ```text
 Customer A requests Customer B pass
 
-Provider A requests Provider B package management
+Provider A requests Provider B Pass management
 
 Provider A attempts Provider B redemption
 
@@ -3000,7 +3097,7 @@ Test:
 ```text
 XSS through provider name
 
-XSS through package description
+XSS through Pass description
 
 malicious URL fields
 
@@ -3289,7 +3386,7 @@ hide the amount
 
 claim payment failed when known successful
 
-silently change package terms during checkout
+silently change Pass terms during checkout
 ```
 
 ---
@@ -3595,13 +3692,13 @@ Do not rely only on frontend button state.
 # 138. Canonical Security Scenario — Purchase
 
 ```text
-Alex creates a package.
+Alex creates a Pass.
 
 Alex's payout wallet has already been verified.
 
 Emin presses Buy Pass.
 
-Backend loads the package.
+Backend loads the Pass.
 
 Backend determines:
 
@@ -3750,7 +3847,7 @@ It does not produce:
 | Attacker copies QR screenshot                 | TTL + one-time challenge + server validation   |
 | QR scanned twice                              | Redemption idempotency                         |
 | Two scans arrive simultaneously               | Atomic transaction/concurrency protection      |
-| Customer changes price in DevTools            | Server-side package snapshot                   |
+| Customer changes price in DevTools            | Server-side Pass snapshot                   |
 | Customer changes recipient                    | Server-side verified payout address            |
 | Old tx reused                                 | Unique transaction hash + purchase correlation |
 | Fake payment success                          | Blockchain verification                        |

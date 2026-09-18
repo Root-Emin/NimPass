@@ -1,25 +1,24 @@
-import { CheckCircle2, Clock, Loader2, PenLine, ShieldCheck, XCircle } from 'lucide-react'
+import { CheckCircle2, Clock, Loader2, ShieldCheck, Ticket, XCircle } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 
-import { RedemptionCode } from '@/components/pass/redemption-code'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import type { SessionRedemption } from '@/hooks/use-redemption'
 import { formatSessions } from '@/lib/format'
 
 /**
- * The customer's "use a session" surface (docs/03-DESIGN-SYSTEM.md §55-§58).
+ * The "use a session" surface (docs/03-DESIGN-SYSTEM.md §55-§58).
  *
- * It walks the real ceremony — challenge, native signature, authorised code,
- * countdown, provider confirmation — and the honesty of each step is the whole
- * design:
+ * It walks the real ceremony — challenge, native signature, consumed session —
+ * and the honesty of each step is the whole design:
  *
- *  - Signing authorises a session; it is not a payment, and the copy says so
- *    before the native dialog opens (§7).
- *  - Dismissing that dialog is a cancellation, not a failure, and no usable
- *    code is ever minted from it (§8).
- *  - Showing a code is not using a session (docs/02-USER-FLOWS.md §48).
+ *  - Signing is not a payment, and the copy says so before the native dialog
+ *    opens (§7). It now also says plainly that confirming spends the session,
+ *    because it does: there is no provider step afterwards to change anyone's
+ *    mind.
+ *  - Dismissing that dialog is a cancellation, not a failure, and nothing is
+ *    spent by it (§8).
  *  - Expiry reports that *no* session was used, because none was
  *    (docs/09-SECURITY.md §48).
  *  - Success appears only when the backend says the challenge was consumed.
@@ -33,7 +32,7 @@ export function RedemptionSheet({
   redemption: SessionRedemption
   passId?: string
 }) {
-  const { state, begin, proceed, restoreReference, dismiss } = redemption
+  const { state, begin, proceed, dismiss } = redemption
   const open = state.kind !== 'IDLE'
   const step = describe()
 
@@ -46,7 +45,12 @@ export function RedemptionSheet({
     >
       {open ? (
         <DialogContent title={step.title} description={step.description}>
-          {step.body}
+          {/* The ceremony moves through several steps inside one open dialog;
+              keying on the step makes each one arrive rather than replace the
+              last mid-read. The success state is the moment §85 names. */}
+          <div key={state.kind} className="animate-fade-in">
+            {step.body}
+          </div>
           {step.actions ? (
             <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
               {step.actions}
@@ -81,18 +85,18 @@ export function RedemptionSheet({
 
       case 'CREATING_CHALLENGE':
         return {
-          title: 'Getting your session code…',
+          title: 'Getting ready…',
           description: 'This does not use a session yet.',
           body: <Waiting label="Just a moment…" />,
         }
 
       /*
        * The one screen that exists purely to make the native dialog
-       * understandable. Nimiq Pay is about to ask for a signature, and a
-       * customer who has just bought something with NIM will reasonably assume
-       * any wallet prompt is a payment. It is not, and saying so here — before
-       * the sheet opens — is the difference between informed approval and a
-       * dismissed dialog (§7).
+       * understandable, and the only point at which this can still be stopped.
+       * Nimiq Pay is about to ask for a signature, and a customer who has just
+       * bought something with NIM will reasonably assume any wallet prompt is a
+       * payment. It is not — but it does spend a session, and both halves of
+       * that have to be said before the native dialog opens (§7).
        *
        * The canonical message itself is deliberately not dumped on screen. It
        * is machine-readable ceremony, not customer-facing text, and the actual
@@ -100,26 +104,26 @@ export function RedemptionSheet({
        */
       case 'AWAITING_SIGNATURE':
         return {
-          title: 'Approve this session',
+          title: 'Use one session?',
           description: 'Your wallet will ask you to confirm. This is not a payment.',
           body: (
             <div className="space-y-4">
               <Reassurance
                 icon={<ShieldCheck aria-hidden="true" />}
                 title="No NIM is sent"
-                body="You are approving the use of one session from this pass. Nothing leaves your wallet."
+                body="You are confirming that you want to use one session from this pass. Nothing leaves your wallet."
               />
               <Reassurance
-                icon={<PenLine aria-hidden="true" />}
-                title="Your provider still has to confirm"
-                body="After you approve, you'll get a code to show them. The session is only used once they confirm it."
+                icon={<Ticket aria-hidden="true" />}
+                title="This uses the session straight away"
+                body="Once you confirm in your wallet, one session comes off this pass. There's no undo, so only do this when you're actually using it."
               />
             </div>
           ),
           actions: (
             <>
               {close('Not now')}
-              <Button onClick={() => void proceed()}>Continue</Button>
+              <Button onClick={() => void proceed()}>Use a session</Button>
             </>
           ),
         }
@@ -133,59 +137,9 @@ export function RedemptionSheet({
 
       case 'AUTHORIZING':
         return {
-          title: 'Checking your approval…',
+          title: 'Using your session…',
           description: 'Almost there.',
           body: <Waiting label="Just a moment…" />,
-        }
-
-      case 'QR_READY':
-        return {
-          title: 'Show this to your provider',
-          description: 'Showing this code does not use a session yet.',
-          body: (
-            <div className="space-y-5">
-              {/*
-                Keyed on the reference so a rotation unmounts the old QR
-                entirely rather than re-rendering a stale image over a new
-                code (§15).
-              */}
-              <RedemptionCode
-                key={state.reference}
-                reference={state.reference}
-                expiresAt={state.challenge.expiresAt}
-              />
-              <p className="text-center text-small text-ink-muted">
-                Waiting for your provider to confirm…
-              </p>
-            </div>
-          ),
-          actions: close(),
-        }
-
-      /*
-       * Authorised, but this browser has no reference — the usual cause is a
-       * reload, because reading a challenge back never returns one.
-       *
-       * Nothing is fabricated here. Re-posting to the create endpoint rotates
-       * the reference server-side and returns a fresh one, without a second
-       * signature, because this challenge is already authorised (§14).
-       */
-      case 'AUTHORIZED_NO_REFERENCE':
-        return {
-          title: 'Your session is still approved',
-          description: 'We just need to issue a new code for it.',
-          body: (
-            <p className="text-body text-ink-muted">
-              Codes are only shown once, so this one isn't on this device any more. Getting a new
-              one won't use a session, and won't ask you to approve again.
-            </p>
-          ),
-          actions: (
-            <>
-              {close()}
-              <Button onClick={() => void restoreReference()}>Show a new code</Button>
-            </>
-          ),
         }
 
       case 'CONSUMED':
@@ -198,7 +152,7 @@ export function RedemptionSheet({
             <Outcome
               tone="success"
               icon={<CheckCircle2 aria-hidden="true" />}
-              title="Your provider confirmed it"
+              title="That's one session used"
               body={
                 state.completed
                   ? "You've used every session on this pass."
@@ -211,39 +165,39 @@ export function RedemptionSheet({
 
       case 'EXPIRED':
         return {
-          title: 'That code expired',
+          title: 'That took too long',
           description: 'No session was used.',
           body: (
             <Outcome
               tone="warning"
               icon={<Clock aria-hidden="true" />}
               title="Nothing was used"
-              body="Codes last five minutes. You can get a new one whenever you're ready."
+              body="A request only stays open for five minutes. Your pass is untouched — start again whenever you're ready."
             />
           ),
           actions: (
             <>
               {close()}
-              {tryAgain('Get a new code')}
+              {tryAgain()}
             </>
           ),
         }
 
       /*
        * The pass changed since this challenge was made — another session was
-       * redeemed in between. The old attempt cannot be reused, and the frontend
-       * must not try (§27).
+       * used in between, from another device. The old attempt cannot be reused,
+       * and the frontend must not try (§27).
        */
       case 'STALE':
         return {
-          title: 'This code is out of date',
+          title: 'This request is out of date',
           description: 'No session was used by it.',
           body: (
             <Outcome
               tone="warning"
               icon={<Clock aria-hidden="true" />}
               title="Something changed on this pass"
-              body="A session was used since this code was made, so it no longer applies. Start again to get a current one."
+              body="A session was used since you started this, so it no longer applies. Start again to work from the current count."
             />
           ),
           actions: (
@@ -262,8 +216,8 @@ export function RedemptionSheet({
             <Outcome
               tone="neutral"
               icon={<CheckCircle2 aria-hidden="true" />}
-              title="Already redeemed"
-              body="Your provider has already confirmed this one. Your remaining sessions are up to date."
+              title="Already used"
+              body="This one had already gone through, so nothing was used twice. Your remaining sessions are up to date."
             />
           ),
           actions: close('Done'),
@@ -286,7 +240,7 @@ export function RedemptionSheet({
               {close()}
               {passId ? (
                 <Button asChild>
-                  <Link to="/discover">Find another package</Link>
+                  <Link to="/discover">Find another pass</Link>
                 </Button>
               ) : null}
             </>
@@ -354,14 +308,14 @@ export function RedemptionSheet({
 
       case 'AUTH_REQUIRED':
         return {
-          title: 'Sign in again',
+          title: 'Log in again',
           description: 'Your session has ended.',
           body: (
             <Outcome
               tone="warning"
               icon={<ShieldCheck aria-hidden="true" />}
-              title="You've been signed out"
-              body="Sign in with your wallet to use a session. Nothing was used."
+              title="You've been logged out"
+              body="Log in with your wallet to use a session. Nothing was used."
             />
           ),
           actions: close(),

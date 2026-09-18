@@ -25,14 +25,16 @@ const DIST = join(process.cwd(), 'dist')
 const FIXTURE_MARKERS = [
   // Module and API surface.
   'serveFromFixtures',
-  'FIXTURE_PACKAGES',
+  'FIXTURE_OFFERS',
   'FIXTURE_PROVIDERS',
   'FIXTURE_SERVICES',
   'fixturesEnabled',
   'VITE_DEV_FIXTURES',
-  // The banner that announces fixture mode.
+  // The console warning that announces fixture mode, and the transport's
+  // refusal message. Both strings exist in dev code today, so a bundle that
+  // contains either is genuinely shipping the fixture layer.
   'Development fixtures',
-  'not backend data',
+  'not simulated',
   // Invented identities from src/dev/fixtures/catalogue.ts.
   'prov_alex',
   'Mira Bendz',

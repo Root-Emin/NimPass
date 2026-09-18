@@ -8,7 +8,7 @@
 > **Related:** `08-ARCHITECTURE.md`, `09-SECURITY.md`, `10-SUBMISSION-CHECKLIST.md`
 > **Official platform sources:** Nimiq Developer Center — Mini Apps, Nimiq Provider API, Nimiq RPC/Web Client documentation; Nimiq Mini Apps Competition rules, FAQ and scoring documentation
 > **Documentation snapshot:** September 2026
-> **Primary purpose:** Define exactly how Nimpass creates, submits, verifies, reconciles, and recovers NIM package payments through Nimiq Pay.
+> **Primary purpose:** Define exactly how Nimpass creates, submits, verifies, reconciles, and recovers NIM Pass payments through Nimiq Pay.
 
 ---
 
@@ -19,7 +19,7 @@ This file defines the complete Nimpass payment lifecycle.
 It answers:
 
 ```text
-How is a package price represented?
+How is a Pass price represented?
 
 Who receives the NIM?
 
@@ -61,7 +61,7 @@ They must never depend only on frontend assumptions.
 The canonical Nimpass purchase lifecycle is:
 
 ```text
-PACKAGE
+PASS
    ↓
 PURCHASE INTENT
    ↓
@@ -75,7 +75,7 @@ SERVER-SIDE VERIFICATION
    ↓
 PURCHASE CONFIRMED
    ↓
-PASS CREATED
+PURCHASED PASS
 ```
 
 Never simplify this to:
@@ -162,7 +162,7 @@ The Nimpass MVP uses:
 NIM
 ```
 
-as its session-package payment currency.
+as its session-Pass payment currency.
 
 The competition permits NIM, USDT, or both, but requires a meaningful Nimiq Pay integration. Using NIM or the wider Nimiq ecosystem also contributes to the Nimiq integration scoring category.
 
@@ -268,7 +268,7 @@ one Luna equals:
 
 Therefore the NIM denomination supports five decimal places at this unit level.
 
-Package-price validation must reject any price that cannot be represented exactly in Luna.
+Pass-price validation must reject any price that cannot be represented exactly in Luna.
 
 Example:
 
@@ -309,7 +309,7 @@ formatNim()
 Do not implement currency conversion independently in:
 
 ```text
-package card
+Pass card
 
 checkout page
 
@@ -375,7 +375,7 @@ Payout Wallet
 NQ...
 ```
 
-This address is used when Nimpass constructs package-payment instructions.
+This address is used when Nimpass constructs Pass-payment instructions.
 
 It must come from trusted server-side provider configuration.
 
@@ -385,18 +385,30 @@ It must come from trusted server-side provider configuration.
 
 A provider must not simply type an arbitrary Nimiq address and immediately make it trusted.
 
-Recommended registration model:
+In Nimpass a provider never types one at all. The first payout address is the
+wallet that signed in, adopted server-side from the session when the provider
+record is created, and the sign-in signature is the proof of control
+(`DECISIONS.md` ADR-025):
 
 ```text
-Provider Workspace
+Sign in — challenge signed with Nimiq Pay
        ↓
-Connect / identify Nimiq wallet
+Backend verifies proof, identity holds the wallet
+       ↓
+Provider created → payout address VERIFIED
+```
+
+Changing it to a *different* address is the case this section is about, and it
+keeps the full ceremony:
+
+```text
+Provider names the new address
        ↓
 Backend creates verification challenge
        ↓
 Provider signs challenge with Nimiq Pay
        ↓
-Backend verifies proof
+Backend verifies proof, plus a step-up from the login wallet
        ↓
 Payout address becomes VERIFIED
 ```
@@ -421,7 +433,7 @@ Incorrect:
 POST /purchase
 
 {
-  packageId: "...",
+  passId: "...",
   recipient: "NQ..."
 }
 ```
@@ -431,9 +443,9 @@ where the backend blindly trusts `recipient`.
 Correct:
 
 ```text
-packageId
+passId
     ↓
-backend loads package
+backend loads Pass
     ↓
 backend loads provider
     ↓
@@ -448,13 +460,13 @@ The recipient is server-derived.
 
 # 14. Never Trust Price From the Browser
 
-Similarly, the client must not submit the authoritative package price.
+Similarly, the client must not submit the authoritative Pass price.
 
 Incorrect:
 
 ```text
 {
-  packageId: "pkg_123",
+  passId: "pass_123",
   price: 1
 }
 ```
@@ -463,14 +475,14 @@ Correct:
 
 ```text
 {
-  packageId: "pkg_123"
+  passId: "pass_123"
 }
 ```
 
 Backend:
 
 ```text
-load package
+load Pass
 
 verify available
 
@@ -483,22 +495,22 @@ create purchase intent
 
 ---
 
-# 15. Package Snapshot Principle
+# 15. Pass Snapshot Principle
 
-A package describes the current offer.
+A Pass describes the current offer.
 
 A purchase describes the terms actually purchased.
 
 Therefore creating a purchase intent snapshots:
 
 ```text
-packageId
+passId
 
 providerId
 
 serviceId
 
-packageTitle
+passTitle
 
 sessionCount
 
@@ -515,13 +527,13 @@ currency
 
 where relevant.
 
-This prevents later package editing from mutating an existing payment operation.
+This prevents later Pass editing from mutating an existing payment operation.
 
 ---
 
-# 16. Example Package
+# 16. Example Pass
 
-Current package:
+Current Pass:
 
 ```text
 10 Personal Training Sessions
@@ -545,7 +557,7 @@ Authoritative internal amount:
 Purchase snapshot:
 
 ```text
-packageId
+passId
 pkg_training_10
 
 sessions
@@ -579,7 +591,7 @@ Conceptually:
 PurchaseIntent {
     id
 
-    packageId
+    passId
 
     providerId
 
@@ -624,7 +636,7 @@ has no robust application identity.
 A purchase intent allows Nimpass to answer:
 
 ```text
-Which package was being purchased?
+Which Pass was being purchased?
 
 Which price did the user approve?
 
@@ -692,17 +704,17 @@ Customer chooses:
 Frontend requests:
 
 ```text
-createPurchaseIntent(packageId)
+createPurchaseIntent(passId)
 ```
 
 Backend must verify:
 
 ```text
-package exists
+Pass exists
 
-package is published
+Pass is published
 
-package is available
+Pass is available
 
 provider exists
 
@@ -731,7 +743,7 @@ Purpose:
 
 ```text
 prevent ancient payment instructions
-prevent stale package terms
+prevent stale Pass terms
 simplify reconciliation
 prevent indefinite checkout reuse
 ```
@@ -761,7 +773,7 @@ The frontend may receive data such as:
 ```text
 purchaseIntentId
 
-displayPackage
+displayPass
 
 displayProvider
 
@@ -786,7 +798,7 @@ However the backend retains the authoritative copy.
 
 # 23. Canonical Payment API Choice
 
-For Nimpass package purchases, the intended Nimiq provider method is:
+For Nimpass Pass purchases, the intended Nimiq provider method is:
 
 ```text
 sendBasicTransactionWithData()
@@ -873,7 +885,7 @@ The blockchain data field is not a substitute for Nimpass storage.
 Do not encode:
 
 ```text
-package
+Pass
 
 customer
 
@@ -1249,7 +1261,7 @@ or:
 actualValue > expectedValue
 ```
 
-as a successful package purchase.
+as a successful Pass purchase.
 
 Unexpected values require explicit reconciliation policy.
 
@@ -1257,7 +1269,7 @@ Unexpected values require explicit reconciliation policy.
 
 # 42. Why Exact Amount Matters
 
-Suppose the package costs:
+Suppose the Pass costs:
 
 ```text
 250 NIM
@@ -1275,7 +1287,7 @@ Received:
 24,999,999 Luna
 ```
 
-The payment is not the exact package payment.
+The payment is not the exact Pass payment.
 
 Similarly:
 
@@ -1283,9 +1295,9 @@ Similarly:
 26,000,000 Luna
 ```
 
-must not silently change the package or create additional sessions.
+must not silently change the Pass or create additional sessions.
 
-Package semantics are not derived from arbitrary payment amount.
+Pass semantics are not derived from arbitrary payment amount.
 
 ---
 
@@ -1389,14 +1401,61 @@ and transaction detail structures can include confirmation information.
 
 Nimpass must maintain an explicit confirmation policy.
 
-Initial MVP policy:
+The policy is backend configuration, never a per-request choice and never a
+frontend one:
 
 ```text
-A transaction must be included in the expected Nimiq chain
+NIMIQ_CONFIRMATION_POLICY=inclusion   (default)
+NIMIQ_CONFIRMATION_POLICY=finality
+```
+
+An unrecognised value fails startup. There is no silent fallback: a deployment
+that cannot say which risk it accepted does not start.
+
+Under `inclusion`:
+
+```text
+A transaction must be included in the expected Nimiq chain,
+and must pass the entire verification checklist in §39,
 before the purchase becomes CONFIRMED.
 ```
 
-Additional confirmation depth may be introduced later through configuration if security/risk analysis requires it.
+Under `finality` the same checks apply and the purchase additionally waits for
+the macro block that makes the inclusion irreversible.
+
+Albatross produces a micro block in roughly a second and a macro block at fixed
+multiples of the batch length, so `finality` adds an arbitrary wait of up to
+about a minute to every checkout — for a payment that was already on chain.
+`inclusion` is the default for that reason, and the trade it makes is recorded
+in ADR-021 rather than assumed here.
+
+The policy governs the *wait*, never the *validation*. Every check in §39 to
+§45 runs before a receipt exists under either policy, and §47 holds absolutely:
+a transaction seen only in the mempool confirms nothing.
+
+## Settlement is a state of its own
+
+Because the purchase can be complete while the payment is not yet irreversible,
+the receipt carries its own state, separate from the purchase's:
+
+```text
+INCLUDED    accepted, canonically included, macro block still pending
+FINALIZED   the macro block was observed and still contains the transaction
+CONTESTED   the transaction stopped being canonical and the deadline passed
+```
+
+`INCLUDED` is reported to clients as `settlement.provisional`. It exists to
+*describe* a purchase, never to gate what the customer may see: a completed
+purchase with a provisional settlement is the normal outcome of a fast checkout,
+and withholding the Pass on it would reintroduce the wait this policy removes.
+
+Finality tracking continues in the background after the Pass exists. Promotion
+re-reads the chain and compares it against the stored receipt rather than
+trusting block height alone, so a reorg is detected rather than finalised
+through. A transaction that stops being canonical opens a compensation case
+instead of leaving a paid-looking purchase in place — and that case is the one
+kind where the customer *may* pay again, because no NIM ever left their wallet.
+ADR-021 records what the worker may and may not conclude.
 
 ---
 
@@ -1574,7 +1633,7 @@ Pass {
 
     serviceId
 
-    packageSnapshot
+    passSnapshot
 
     originalSessions
 
@@ -2094,7 +2153,7 @@ intent lifecycle validation
 
 # 70. Same Amount Collision
 
-Two packages may legitimately cost:
+Two Passes may legitimately cost:
 
 ```text
 250 NIM
@@ -2135,7 +2194,7 @@ customer email
 
 provider slug only
 
-package title
+Pass title
 
 sequential guessable purchase number
 ```
@@ -2216,7 +2275,7 @@ If actual value exceeds expected value:
 actual > expected
 ```
 
-the package must still not silently change.
+the Pass must still not silently change.
 
 Do not automatically create:
 
@@ -2281,7 +2340,7 @@ Technical blockchain information should not dominate the normal UX.
 Provider operational history may show:
 
 ```text
-Package purchased
+Pass purchased
 
 10 Personal Training Sessions
 
@@ -2349,7 +2408,7 @@ without Nimiq provider access.
 Flow:
 
 ```text
-Public Package
+Public Pass
       ↓
 Buy Pass
       ↓
@@ -2357,7 +2416,7 @@ wallet capability required
       ↓
 Open / Continue in Nimiq Pay
       ↓
-same package
+same Pass
       ↓
 payment
 ```
@@ -2372,12 +2431,12 @@ Nimpass should use the officially documented mechanism rather than inventing its
 
 ---
 
-# 83. Preserve Package Context
+# 83. Preserve Pass Context
 
 Browser:
 
 ```text
-/nimpass/provider/alex/package/training-10
+/nimpass/provider/alex/Pass/training-10
 ```
 
 must transition conceptually to:
@@ -2385,7 +2444,7 @@ must transition conceptually to:
 ```text
 Nimiq Pay
       ↓
-same package
+same Pass
 ```
 
 not:
@@ -2396,7 +2455,7 @@ Nimiq Pay
 generic homepage
 ```
 
-The user should never have to search for the package again.
+The user should never have to search for the Pass again.
 
 ---
 
@@ -2409,14 +2468,14 @@ A.
 Create intent before handoff
 
 B.
-Preserve package context and create intent
+Preserve Pass context and create intent
 after Nimiq Pay opens
 ```
 
 Current recommended strategy:
 
 ```text
-package context is preserved
+Pass context is preserved
 
 purchase intent is created/revalidated
 inside the wallet-capable flow
@@ -2432,7 +2491,7 @@ This minimizes stale intents created by users who never reach Nimiq Pay.
 The browser may carry:
 
 ```text
-package identifier
+Pass identifier
 ```
 
 but must not establish authoritative:
@@ -2487,7 +2546,7 @@ Preferred:
 
 ```text
 Browse
-→ Package
+→ Pass
 → Buy
 → Payment
 ```
@@ -2501,7 +2560,7 @@ Homepage
 Provider
 → wallet prompt
 
-Package
+Pass
 → wallet prompt
 ```
 
@@ -3055,7 +3114,7 @@ Conceptually:
 ```text
 purchaseIntentId
 
-packageSnapshot
+passSnapshot
 
 providerId
 
@@ -3167,7 +3226,7 @@ must remain:
 250 NIM
 ```
 
-even if provider changes package to:
+even if provider changes Pass to:
 
 ```text
 300 NIM
@@ -3175,13 +3234,13 @@ even if provider changes package to:
 
 after Intent A was created.
 
-Once Intent A expires, the customer must review current package terms to create a new purchase.
+Once Intent A expires, the customer must review current Pass terms to create a new purchase.
 
 ---
 
-# 116. Provider Disables Package Mid-Purchase
+# 116. Provider Disables Pass Mid-Purchase
 
-If a valid purchase intent already exists and the provider disables the package before payment:
+If a valid purchase intent already exists and the provider disables the Pass before payment:
 
 the exact acceptance policy must be deterministic.
 
@@ -3195,7 +3254,7 @@ the purchase intent remains valid.
 If the intent expires or becomes invalid before payment begins:
 
 ```text
-return to current package state
+return to current Pass state
 ```
 
 Do not silently use stale purchase terms indefinitely.
@@ -3572,7 +3631,7 @@ Nimiq Pay safely mediates wallet actions, but it does not know Nimpass business 
 Nimiq Pay does not decide:
 
 ```text
-which package exists
+which Pass exists
 
 how many sessions it contains
 
@@ -3604,7 +3663,7 @@ transaction
 It does not establish Nimpass concepts such as:
 
 ```text
-package title
+Pass title
 
 10 sessions
 
@@ -3622,7 +3681,7 @@ Blockchain facts and application facts must be combined carefully.
 Canonical flow:
 
 ```text
-1. Customer opens package.
+1. Customer opens Pass.
 
 2. Nimpass displays:
    10 Personal Training Sessions
@@ -3630,7 +3689,7 @@ Canonical flow:
 
 3. Customer chooses Buy Pass.
 
-4. Backend validates package.
+4. Backend validates Pass.
 
 5. Backend creates purchase intent.
 
@@ -3971,7 +4030,7 @@ concurrent completion
 
 pass creation failure
 
-provider changes package price
+provider changes Pass price
 
 provider changes payout address
 
@@ -4220,9 +4279,9 @@ browser
 Nimiq Pay
 ```
 
-preserve the package the user intended to purchase.
+preserve the Pass the user intended to purchase.
 
-Never redirect a valid package intent to a generic landing page unless recovery requires it.
+Never redirect a valid Pass intent to a generic landing page unless recovery requires it.
 
 ---
 
@@ -4268,7 +4327,7 @@ The UI and backend must preserve this distinction.
 
 The following statements must always remain true:
 
-1. Package price is authoritative on the server.
+1. Pass price is authoritative on the server.
 
 2. Provider payment recipient is authoritative on the server.
 
@@ -4314,7 +4373,7 @@ The following statements must always remain true:
 
 23. Mainnet and testnet are never mixed.
 
-24. Existing purchases preserve their package snapshot.
+24. Existing purchases preserve their Pass snapshot.
 
 25. Nimiq payment functionality remains central to the product rather than decorative.
 
@@ -4336,17 +4395,17 @@ Alex publishes:
 10 Personal Training Sessions
 250 NIM.
 
-Emin opens the package.
+Emin opens the Pass.
 
 Emin chooses:
 
 Buy Pass.
 
-Nimpass backend loads the package.
+Nimpass backend loads the Pass.
 
 It confirms:
 
-package is available
+Pass is available
 
 sessions = 10
 
@@ -4467,7 +4526,7 @@ One pass.
 ```text
 01-PRODUCT.md
 
-Defines why NIM package purchasing exists.
+Defines why NIM Pass purchasing exists.
 
 
 02-USER-FLOWS.md

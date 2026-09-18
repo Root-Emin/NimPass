@@ -2,7 +2,6 @@ import type { ReactNode } from 'react'
 
 import { Footer } from '@/components/layout/footer'
 import { Header } from '@/components/layout/header'
-import { FixtureBanner } from '@/dev/fixture-banner'
 
 /**
  * The public application shell.
@@ -29,9 +28,6 @@ export function AppShell({ children }: { children: ReactNode }) {
       >
         Skip to content
       </a>
-      {/* Guarded at the call site so the whole banner module is dead code in a
-          production build, not merely inert. */}
-      {import.meta.env.DEV ? <FixtureBanner /> : null}
       <Header />
       {/*
         One main landmark for the whole route, so hero sections and other
@@ -41,7 +37,11 @@ export function AppShell({ children }: { children: ReactNode }) {
         position without moving focus leaves a keyboard user exactly where they
         were, which is the failure mode skip links exist to prevent.
       */}
-      <main id="main" tabIndex={-1} className="flex-1 focus:outline-none">
+      <main
+        id="main"
+        tabIndex={-1}
+        className="flex-1 pt-[var(--header-offset)] focus:outline-none"
+      >
         {children}
       </main>
       <Footer />

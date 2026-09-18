@@ -11,12 +11,14 @@ brief:
    the `import.meta.env.DEV` guard means this code is dropped from production
    builds entirely.
 2. **Catalogue only.** Fixtures answer read-only public catalogue requests:
-   providers, services and packages. Nothing else.
+   providers, services and passes. Nothing else.
 3. **No authoritative business results.** Purchases, passes, payments,
    redemptions and every provider mutation are explicitly refused, so those
    flows keep showing their real unavailable/error states instead of a
    fabricated success.
-4. **Visible.** While fixtures are on, the app shows a banner saying so.
+4. **Marked.** While fixtures are on, the app logs a console warning saying so
+   on the first request it serves. There is no banner in the UI: the marking
+   lives in the console so the product surface stays exactly as it will ship.
 
-If you are looking at Nimpass and see the banner, none of the catalogue content
-on screen came from a backend.
+If that warning is in the console, none of the catalogue content on screen came
+from a backend.

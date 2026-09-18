@@ -3,7 +3,12 @@ import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 
 import { PaymentStateView } from './payment-state-view'
-import { aCompensation, aCompensationPurchase, aPurchase } from '@/test/fixtures'
+import {
+  aCompensation,
+  aCompensationPurchase,
+  aPurchase,
+  aReversedSettlementPurchase,
+} from '@/test/fixtures'
 
 const purchase = aPurchase({ status: 'verifying', purchaseStatus: 'VERIFYING' })
 
@@ -57,7 +62,7 @@ describe('PaymentStateView', () => {
   it('links to the pass only once the backend produced one', () => {
     renderState(<PaymentStateView state={{ kind: 'COMPLETE', purchase, passId: 'pass_7' }} />)
 
-    const link = screen.getByRole('link', { name: 'View pass' })
+    const link = screen.getByRole('link', { name: 'Open your pass' })
     expect(link).toHaveAttribute('href', '/passes/pass_7')
   })
 
@@ -139,7 +144,7 @@ describe('PaymentStateView · compensation required', () => {
 
     const body = document.body.textContent ?? ''
     expect(body).not.toContain('COMPENSATION_REQUIRED')
-    expect(body).not.toContain('PACKAGE_EXPIRED_BEFORE_ACTIVATION')
+    expect(body).not.toContain('PASS_EXPIRED_BEFORE_ACTIVATION')
     expect(body).not.toContain('compensation_required')
   })
 
@@ -186,19 +191,101 @@ describe('PaymentStateView · compensation required', () => {
   })
 })
 
+/**
+ * The other thing that lands in COMPENSATION_REQUIRED: a settlement that was
+ * reversed.
+ *
+ * A pass issued on a canonical inclusion that later lost the chain (ADR-021).
+ * No NIM ever left the wallet, so this customer needs the opposite advice from
+ * the case above, and every assertion here is about not giving them the wrong
+ * one. Confusing the two costs a customer either their money or their pass.
+ */
+describe('PaymentStateView · reversed settlement', () => {
+  const reversed = aReversedSettlementPurchase()
+
+  function renderReversed() {
+    return renderState(
+      <PaymentStateView
+        state={{
+          kind: 'COMPENSATION_REQUIRED',
+          purchase: reversed,
+          compensation: reversed.compensation,
+        }}
+        onRetry={vi.fn()}
+        onReconcile={vi.fn()}
+      />,
+    )
+  }
+
+  it('says nothing was charged, rather than claiming the payment arrived', () => {
+    renderReversed()
+
+    expect(screen.getByText('This payment did not go through')).toBeInTheDocument()
+    expect(screen.getByText(/nothing was charged/i)).toBeInTheDocument()
+
+    const body = document.body.textContent ?? ''
+    expect(body).not.toMatch(/payment received/i)
+    expect(body).not.toMatch(/your payment arrived/i)
+  })
+
+  it('does not tell a customer who was never charged to avoid paying again', () => {
+    // The whole point of the split. "Do not pay again" here would leave them
+    // with no pass, no charge and no way forward.
+    renderReversed()
+
+    const body = document.body.textContent ?? ''
+    expect(body).not.toMatch(/do not pay again/i)
+    expect(screen.getByText(/You were not charged/i)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Back to the pass' })).toHaveAttribute(
+      'href',
+      `/pass/${reversed.passId}`,
+    )
+  })
+
+  it('reads the distinction from the backend flag, not from the reason string', () => {
+    expect(reversed.compensation?.doNotPayAgain).toBe(false)
+    expect(reversed.compensation?.reason).toBe('PAYMENT_SETTLEMENT_REVERSED')
+    // A missing record must fall back to the cautious wording, never to this.
+    renderState(
+      <PaymentStateView
+        state={{ kind: 'COMPENSATION_REQUIRED', purchase: reversed, compensation: null }}
+      />,
+    )
+    expect(screen.getByText(/could not be issued/i)).toBeInTheDocument()
+  })
+
+  it('never prints the raw enums at the user', () => {
+    renderReversed()
+
+    const body = document.body.textContent ?? ''
+    expect(body).not.toContain('PAYMENT_SETTLEMENT_REVERSED')
+    expect(body).not.toContain('CONTESTED')
+    expect(body).not.toContain('COMPENSATION_REQUIRED')
+  })
+
+  it('still offers no retry on the dead intent', () => {
+    // They may buy the pass again from the pass page, which creates a fresh
+    // intent. Re-arming *this* one would re-use an expired payment request.
+    renderReversed()
+
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Check again' })).not.toBeInTheDocument()
+  })
+})
+
 describe('PaymentStateView · purchase cutoff', () => {
   it('explains the cutoff instead of showing a generic failure', () => {
     renderState(
       <PaymentStateView state={{ kind: 'PURCHASE_CUTOFF', purchase: null }} onRetry={vi.fn()} />,
     )
 
-    expect(screen.getByText('Too late to buy this package')).toBeInTheDocument()
+    expect(screen.getByText('Too late to buy this pass')).toBeInTheDocument()
     expect(screen.getByText('You have not been charged.')).toBeInTheDocument()
     expect(screen.queryByText("Payment couldn't be completed")).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
 
     const body = document.body.textContent ?? ''
-    expect(body).not.toContain('PACKAGE_PURCHASE_CUTOFF')
+    expect(body).not.toContain('PASS_PURCHASE_CUTOFF')
     expect(body).not.toMatch(/409|conflict/i)
   })
 })

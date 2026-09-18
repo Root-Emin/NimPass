@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -35,7 +36,7 @@ func (h *handler) createLoginChallenge(w http.ResponseWriter, r *http.Request) {
 		apiFailure(w, r, 400, "VALIDATION_ERROR", "Invalid Nimiq wallet")
 		return
 	}
-	if !h.limits.Allow("challenge-ip:"+h.clientIP(r), 20, 5*time.Minute) || !h.limits.Allow("challenge-wallet:"+wallet, 10, 5*time.Minute) {
+	if !h.allow(r, "challenge-ip:"+h.clientIP(r), 20, 5*time.Minute) || !h.allow(r, "challenge-wallet:"+wallet, 10, 5*time.Minute) {
 		apiFailure(w, r, 429, "RATE_LIMITED", "Too many challenges")
 		return
 	}
@@ -52,14 +53,32 @@ type proofRequest struct {
 	Wallet         string `json:"wallet"`
 	PublicKey      string `json:"publicKey"`
 	Signature      string `json:"signature"`
+	SigningScheme  string `json:"signingScheme,omitempty"`
 	OwnerPublicKey string `json:"ownerPublicKey,omitempty"`
 	OwnerSignature string `json:"ownerSignature,omitempty"`
 }
 type loginProofRequest struct {
-	ChallengeID string `json:"challengeId"`
-	Wallet      string `json:"wallet"`
-	PublicKey   string `json:"publicKey"`
-	Signature   string `json:"signature"`
+	ChallengeID   string `json:"challengeId"`
+	Wallet        string `json:"wallet"`
+	PublicKey     string `json:"publicKey"`
+	Signature     string `json:"signature"`
+	SigningScheme string `json:"signingScheme,omitempty"`
+}
+
+// validSigningScheme accepts only the two names the verifier implements.
+//
+// A client says which documented preprocessing produced its signature: "hub"
+// for the Nimiq Hub, whose envelope is specified, and nothing at all for the
+// Mini App provider, whose preprocessing is not — that path stays on the
+// deployment's configured NIMIQ_SIGNING_SCHEME. Anything else is a 400 rather
+// than a silent fallback, so an unknown value can never be verified under some
+// other scheme by accident.
+func validSigningScheme(scheme string) bool {
+	return scheme == "" || scheme == "raw" || scheme == "hub"
+}
+
+func compactNQLength(wallet string) int {
+	return len(strings.ReplaceAll(wallet, " ", ""))
 }
 
 func proofFrom(w http.ResponseWriter, r *http.Request, p proofRequest) (application.Proof, bool) {
@@ -67,18 +86,26 @@ func proofFrom(w http.ResponseWriter, r *http.Request, p proofRequest) (applicat
 	if !ok {
 		return application.Proof{}, false
 	}
-	if len(p.PublicKey) != 64 || len(p.Signature) != 128 || len(p.Wallet) > 40 || len(p.OwnerPublicKey) > 64 || len(p.OwnerSignature) > 128 {
+	// Compact Nimiq addresses are 36 characters. Hub chooseAddress() returns
+	// the user-friendly form with spaces ("NQ41 CDMJ … N9Y2"), which is 44.
+	// ChallengeInput already accepts that spelling; this bound must too, or
+	// every real Hub login proof dies here as "Invalid proof fields".
+	if len(p.PublicKey) != 64 || len(p.Signature) != 128 || compactNQLength(p.Wallet) > 36 || len(p.OwnerPublicKey) > 64 || len(p.OwnerSignature) > 128 {
 		apiFailure(w, r, 400, "VALIDATION_ERROR", "Invalid proof fields")
 		return application.Proof{}, false
 	}
-	return application.Proof{ChallengeID: id, Wallet: p.Wallet, PublicKey: p.PublicKey, Signature: p.Signature, OwnerPublicKey: p.OwnerPublicKey, OwnerSignature: p.OwnerSignature}, true
+	if !validSigningScheme(p.SigningScheme) {
+		apiFailure(w, r, 400, "VALIDATION_ERROR", "Unsupported signing scheme")
+		return application.Proof{}, false
+	}
+	return application.Proof{ChallengeID: id, Wallet: p.Wallet, PublicKey: p.PublicKey, Signature: p.Signature, SigningScheme: p.SigningScheme, OwnerPublicKey: p.OwnerPublicKey, OwnerSignature: p.OwnerSignature}, true
 }
 func identityDTO(i application.Identity) any {
 	return map[string]any{"id": i.ID, "wallet": i.Wallet, "createdAt": i.CreatedAt}
 }
 
 func (h *handler) completeLogin(w http.ResponseWriter, r *http.Request) {
-	if !h.limits.Allow("verify-ip:"+h.clientIP(r), 40, 5*time.Minute) {
+	if !h.allow(r, "verify-ip:"+h.clientIP(r), 40, 5*time.Minute) {
 		apiFailure(w, r, 429, "RATE_LIMITED", "Too many attempts")
 		return
 	}
@@ -86,7 +113,7 @@ func (h *handler) completeLogin(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	p, ok := proofFrom(w, r, proofRequest{ChallengeID: req.ChallengeID, Wallet: req.Wallet, PublicKey: req.PublicKey, Signature: req.Signature})
+	p, ok := proofFrom(w, r, proofRequest{ChallengeID: req.ChallengeID, Wallet: req.Wallet, PublicKey: req.PublicKey, Signature: req.Signature, SigningScheme: req.SigningScheme})
 	if !ok {
 		return
 	}
@@ -132,7 +159,7 @@ func (h *handler) createPayoutChallenge(w http.ResponseWriter, r *http.Request) 
 		apiFailure(w, r, 400, "VALIDATION_ERROR", "Invalid Nimiq wallet")
 		return
 	}
-	if !h.limits.Allow("payout-ip:"+h.clientIP(r), 20, 5*time.Minute) || !h.limits.Allow("payout-provider:"+string(providerID), 10, 5*time.Minute) {
+	if !h.allow(r, "payout-ip:"+h.clientIP(r), 20, 5*time.Minute) || !h.allow(r, "payout-provider:"+string(providerID), 10, 5*time.Minute) {
 		apiFailure(w, r, 429, "RATE_LIMITED", "Too many challenges")
 		return
 	}
@@ -153,7 +180,7 @@ func (h *handler) verifyPayout(w http.ResponseWriter, r *http.Request) {
 		mappedError(w, r, err)
 		return
 	}
-	if !h.limits.Allow("payout-verify-ip:"+h.clientIP(r), 40, 5*time.Minute) {
+	if !h.allow(r, "payout-verify-ip:"+h.clientIP(r), 40, 5*time.Minute) {
 		apiFailure(w, r, 429, "RATE_LIMITED", "Too many attempts")
 		return
 	}

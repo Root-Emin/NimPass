@@ -2,8 +2,9 @@ import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { anOffer, domainError, mockApi, ok } from '@/test/mock-api'
+import { aPublicPass, domainError, livePurchaseRoutes, mockApi, ok } from '@/test/mock-api'
 import { aCompensationPurchase, aPurchase } from '@/test/fixtures'
+import { APPROVE_LABEL, approveNativePayment, startPurchaseIntent } from '@/test/native-pay'
 
 /**
  * Payment safety under interruption.
@@ -18,21 +19,33 @@ import { aCompensationPurchase, aPurchase } from '@/test/fixtures'
 const sendBasicTransactionWithData = vi.fn()
 const getNetworkReadiness = vi.fn()
 
+import { miniAppTransportDouble } from '@/test/wallet-transport'
+
 vi.mock('@/lib/nimiq', async () => {
   const actual = await vi.importActual<typeof import('@/lib/nimiq')>('@/lib/nimiq')
   return {
     ...actual,
     NIMIQ_NETWORK: 'TESTNET',
-    sendBasicTransactionWithData: (...args: unknown[]) => sendBasicTransactionWithData(...args),
-    getNetworkReadiness: (...args: unknown[]) => getNetworkReadiness(...args),
+    // The wallet is stubbed at the transport boundary — the one interface both
+    // Nimiq Pay and the Nimiq Hub implement. This double is the Nimiq Pay side,
+    // and it calls the hooks below with the provider's own parameter names, so
+    // an assertion here is an assertion about what the wallet is handed.
+    currentTransport: () =>
+      miniAppTransportDouble({
+        listAccounts: async () => ['NQ07 0000 0000 0000 0000 0000 0000 0000 0081'],
+        sendBasicTransactionWithData: (...args: unknown[]) =>
+          sendBasicTransactionWithData(...args),
+        getNetworkReadiness: (...args: unknown[]) => getNetworkReadiness(...args),
+      }),
   }
 })
 
 const { renderApp, stubSession, stubWallet } = await import('@/test/render')
+const { NimiqOperationError, nimiqError } = await import('@/lib/nimiq')
 
 const TX_HASH = 'a1b2c3d4'.repeat(8)
-const OFFER = anOffer()
-const PACKAGE = OFFER.package
+const OFFER = aPublicPass()
+const CATALOG = OFFER.pass
 
 const INTENT = aPurchase()
 const PURCHASE_ID = INTENT.purchaseIntentId
@@ -62,21 +75,20 @@ describe('no second payment while one may already exist', () => {
     sendBasicTransactionWithData.mockResolvedValue(TX_HASH)
 
     mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
       'POST /api/v1/purchases': () => ok(INTENT),
       [`POST /api/v1/purchases/${PURCHASE_ID}/transactions`]: () => {
         throw new TypeError('Failed to fetch')
       },
-      [`/api/v1/purchases/${PURCHASE_ID}`]: () => {
-        throw new TypeError('Failed to fetch')
-      },
+      [`POST /api/v1/purchases/${PURCHASE_ID}/wallet-attempts`]: () => ok(INTENT, 201),
+      [`GET /api/v1/purchases/${PURCHASE_ID}`]: () => ok(INTENT),
     })
 
     const user = userEvent.setup()
-    renderApp(`/packages/${PACKAGE.id}`, { wallet: WALLET, session: SESSION })
+    renderApp(`/pass/${CATALOG.id}`, { wallet: WALLET, session: SESSION })
 
-    await screen.findByRole('heading', { name: PACKAGE.title, level: 1 })
-    await user.click(buyButtons()[0]!)
+    await screen.findByRole('heading', { name: CATALOG.title, level: 1 })
+    await approveNativePayment(user)
 
     expect(await screen.findByText('Checking your payment…')).toBeInTheDocument()
 
@@ -93,7 +105,7 @@ describe('no second payment while one may already exist', () => {
     sendBasicTransactionWithData.mockResolvedValue(TX_HASH)
 
     mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
       'POST /api/v1/purchases': () => ok(INTENT),
       [`POST /api/v1/purchases/${PURCHASE_ID}/transactions`]: () => {
         throw new TypeError('Failed to fetch')
@@ -103,10 +115,10 @@ describe('no second payment while one may already exist', () => {
     })
 
     const user = userEvent.setup()
-    renderApp(`/packages/${PACKAGE.id}`, { wallet: WALLET, session: SESSION })
+    renderApp(`/pass/${CATALOG.id}`, { wallet: WALLET, session: SESSION })
 
-    await screen.findByRole('heading', { name: PACKAGE.title, level: 1 })
-    await user.click(buyButtons()[0]!)
+    await screen.findByRole('heading', { name: CATALOG.title, level: 1 })
+    await approveNativePayment(user)
 
     expect(await screen.findByText('Checking your payment…')).toBeInTheDocument()
     expect(screen.queryByText('Ready to pay')).not.toBeInTheDocument()
@@ -122,25 +134,19 @@ describe('no second payment while one may already exist', () => {
         }),
     )
 
-    mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
-      'POST /api/v1/purchases': () => ok(INTENT),
-      [`POST /api/v1/purchases/${PURCHASE_ID}/transactions`]: () =>
-        ok({ ...INTENT, status: 'verifying', paymentRequest: null, transactionHash: TX_HASH }),
-      [`/api/v1/purchases/${PURCHASE_ID}`]: () => ok({ ...INTENT, status: 'verifying', paymentRequest: null }),
-    })
+    mockApi(livePurchaseRoutes(OFFER, INTENT, { txHash: TX_HASH }))
 
     const user = userEvent.setup()
-    renderApp(`/packages/${PACKAGE.id}`, { wallet: WALLET, session: SESSION })
+    renderApp(`/pass/${CATALOG.id}`, { wallet: WALLET, session: SESSION })
 
-    await screen.findByRole('heading', { name: PACKAGE.title, level: 1 })
-    const buy = buyButtons()[0]!
-    await user.click(buy)
+    await screen.findByRole('heading', { name: CATALOG.title, level: 1 })
+    await approveNativePayment(user)
 
     await waitFor(() => expect(sendBasicTransactionWithData).toHaveBeenCalledTimes(1))
 
     // Second press while the native sheet is open.
-    await user.click(buy).catch(() => {})
+    const approve = screen.queryByRole('button', { name: APPROVE_LABEL })
+    if (approve) await user.click(approve).catch(() => {})
     expect(sendBasicTransactionWithData).toHaveBeenCalledTimes(1)
 
     releaseWallet?.(TX_HASH)
@@ -151,22 +157,16 @@ describe('purchase recovery across a reload', () => {
   it('puts the purchase in the URL so it survives a refresh', async () => {
     sendBasicTransactionWithData.mockResolvedValue(TX_HASH)
 
-    mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
-      'POST /api/v1/purchases': () => ok(INTENT),
-      [`POST /api/v1/purchases/${PURCHASE_ID}/transactions`]: () =>
-        ok({ ...INTENT, status: 'verifying', paymentRequest: null, transactionHash: TX_HASH }),
-      [`/api/v1/purchases/${PURCHASE_ID}`]: () => ok({ ...INTENT, status: 'verifying', paymentRequest: null }),
-    })
+    mockApi(livePurchaseRoutes(OFFER, INTENT, { txHash: TX_HASH }))
 
     const user = userEvent.setup()
-    const { router } = renderApp(`/packages/${PACKAGE.id}`, {
+    const { router } = renderApp(`/pass/${CATALOG.id}`, {
       wallet: WALLET,
       session: SESSION,
     })
 
-    await screen.findByRole('heading', { name: PACKAGE.title, level: 1 })
-    await user.click(buyButtons()[0]!)
+    await screen.findByRole('heading', { name: CATALOG.title, level: 1 })
+    await approveNativePayment(user)
 
     // Without this the purchase id lives only in React memory, and a reload
     // loses the only handle on an in-flight payment (docs/05 §128).
@@ -175,14 +175,14 @@ describe('purchase recovery across a reload', () => {
 
   it('resumes a verifying purchase instead of offering to pay again', async () => {
     const { calls } = mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
       [`/api/v1/purchases/${PURCHASE_ID}`]: () =>
         ok({ ...INTENT, status: 'verifying', paymentRequest: null, transactionHash: TX_HASH }),
     })
 
     // A fresh mount at the recovery URL — exactly what a refresh, a WebView
     // reload, or a return trip from Nimiq Pay produces (docs/05 §66, §138).
-    renderApp(`/packages/${PACKAGE.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
+    renderApp(`/pass/${CATALOG.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
 
     expect(await screen.findByText('Confirming your payment…')).toBeInTheDocument()
     for (const button of buyButtons()) expect(button).toBeDisabled()
@@ -196,12 +196,14 @@ describe('purchase recovery across a reload', () => {
 
   it('recovers a purchase that completed while the customer was away', async () => {
     mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
+      [`GET /api/v1/purchases/${PURCHASE_ID}`]: () =>
+        ok({ ...INTENT, status: 'completed', paymentRequest: null, transactionHash: TX_HASH, purchasedPassId: '40000000-0000-4000-8000-000000000001' }),
       [`/api/v1/purchases/${PURCHASE_ID}`]: () =>
-        ok({ ...INTENT, status: 'completed', paymentRequest: null, transactionHash: TX_HASH, passId: '40000000-0000-4000-8000-000000000001' }),
+        ok({ ...INTENT, status: 'completed', paymentRequest: null, transactionHash: TX_HASH, purchasedPassId: '40000000-0000-4000-8000-000000000001' }),
     })
 
-    renderApp(`/packages/${PACKAGE.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
+    renderApp(`/pass/${CATALOG.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
 
     expect(await screen.findByText('Payment successful')).toBeInTheDocument()
     expect(await screen.findByRole('link', { name: 'View pass' })).toHaveAttribute(
@@ -212,7 +214,7 @@ describe('purchase recovery across a reload', () => {
 
   it('treats an unknown purchase id as nothing to recover, not as a lost payment', async () => {
     mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
       '/api/v1/purchases/aaaaaaaa-0000-4000-8000-0000000000ff': () =>
         new Response(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'gone' } }), {
           status: 404,
@@ -220,9 +222,9 @@ describe('purchase recovery across a reload', () => {
         }),
     })
 
-    renderApp(`/packages/${PACKAGE.id}?purchase=aaaaaaaa-0000-4000-8000-0000000000ff`, { wallet: WALLET, session: SESSION })
+    renderApp(`/pass/${CATALOG.id}?purchase=aaaaaaaa-0000-4000-8000-0000000000ff`, { wallet: WALLET, session: SESSION })
 
-    await screen.findByRole('heading', { name: PACKAGE.title, level: 1 })
+    await screen.findByRole('heading', { name: CATALOG.title, level: 1 })
 
     // A stale or mistyped link is not evidence that money moved, so alarming
     // the customer about a payment would be false (docs/09-SECURITY.md §96).
@@ -253,30 +255,45 @@ describe('recovery after the wallet round trip', () => {
     // the macro block lands, which the test triggers explicitly rather than
     // counting polls — the point is that the *frontend* re-reads the state, not
     // how many times it happens to ask.
+    let paid = false
     let finalised = false
 
     const routes = {
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
-      'POST /api/v1/purchases': () => ok(INTENT, 201),
-      [`POST /api/v1/purchases/${PURCHASE_ID}/transactions`]: () =>
-        ok({ ...INTENT, status: 'transaction_submitted', paymentRequest: null, transactionHash: TX_HASH }, 202),
-      [`/api/v1/purchases/${PURCHASE_ID}`]: () =>
-        ok({
-          ...INTENT,
-          status: finalised ? 'completed' : 'awaiting_finality',
-          paymentRequest: null,
-          transactionHash: TX_HASH,
-          passId: finalised ? PASS_ID : null,
-        }),
+      ...livePurchaseRoutes(OFFER, INTENT, {
+        txHash: TX_HASH,
+        extra: {
+          [`POST /api/v1/purchases/${PURCHASE_ID}/transactions`]: () => {
+            paid = true
+            return ok({
+              ...INTENT,
+              status: 'transaction_submitted',
+              paymentRequest: null,
+              transactionHash: TX_HASH,
+            }, 202)
+          },
+          [`GET /api/v1/purchases/${PURCHASE_ID}`]: () =>
+            ok(
+              paid
+                ? {
+                    ...INTENT,
+                    status: finalised ? 'completed' : 'awaiting_finality',
+                    paymentRequest: null,
+                    transactionHash: TX_HASH,
+                    purchasedPassId: finalised ? PASS_ID : null,
+                  }
+                : INTENT,
+            ),
+        },
+      }),
     }
 
     mockApi(routes)
 
     // 1. Pay.
     const user = userEvent.setup()
-    const first = renderApp(`/packages/${PACKAGE.id}`, { wallet: WALLET, session: SESSION })
-    await screen.findByRole('heading', { name: PACKAGE.title, level: 1 })
-    await user.click(buyButtons()[0]!)
+    const first = renderApp(`/pass/${CATALOG.id}`, { wallet: WALLET, session: SESSION })
+    await screen.findByRole('heading', { name: CATALOG.title, level: 1 })
+    await approveNativePayment(user)
 
     await waitFor(() => expect(sendBasicTransactionWithData).toHaveBeenCalledTimes(1))
     await waitFor(() =>
@@ -289,7 +306,7 @@ describe('recovery after the wallet round trip', () => {
 
     // 3. It comes back at the recovery URL with nothing in memory.
     mockApi(routes)
-    renderApp(`/packages/${PACKAGE.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
+    renderApp(`/pass/${CATALOG.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
 
     // The state is re-read from the backend, not restored from local memory.
     expect(await screen.findByText('Finalising your payment…')).toBeInTheDocument()
@@ -312,11 +329,11 @@ describe('recovery after the wallet round trip', () => {
     const COMPENSATED = aCompensationPurchase({ transactionHash: TX_HASH })
 
     const { calls } = mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
       [`/api/v1/purchases/${PURCHASE_ID}`]: () => ok(COMPENSATED),
     })
 
-    renderApp(`/packages/${PACKAGE.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
+    renderApp(`/pass/${CATALOG.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
 
     expect(
       await screen.findByText('Payment received, but your pass could not be issued'),
@@ -332,7 +349,7 @@ describe('recovery after the wallet round trip', () => {
     let reconciles = 0
 
     const { calls } = mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
       [`/api/v1/purchases/${PURCHASE_ID}`]: () =>
         ok({ ...INTENT, status: 'awaiting_finality', paymentRequest: null, transactionHash: TX_HASH }),
       [`POST /api/v1/purchases/${PURCHASE_ID}/reconcile`]: () => {
@@ -342,7 +359,7 @@ describe('recovery after the wallet round trip', () => {
     })
 
     const user = userEvent.setup()
-    renderApp(`/packages/${PACKAGE.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
+    renderApp(`/pass/${CATALOG.id}?purchase=${PURCHASE_ID}`, { wallet: WALLET, session: SESSION })
 
     await screen.findByText('Finalising your payment…')
     await user.click(await screen.findByRole('button', { name: 'Check again' }))
@@ -367,22 +384,14 @@ describe('transaction submission', () => {
       () => new Promise<string>((resolve) => { releaseWallet = resolve }),
     )
 
-    const { fetchMock } = mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
-      'POST /api/v1/purchases': () => ok(INTENT, 201),
-      [`POST /api/v1/purchases/${PURCHASE_ID}/transactions`]: () =>
-        ok({ ...INTENT, status: 'verifying', paymentRequest: null, transactionHash: TX_HASH }, 202),
-      [`/api/v1/purchases/${PURCHASE_ID}`]: () =>
-        ok({ ...INTENT, status: 'verifying', paymentRequest: null }),
-    })
+    const { fetchMock } = mockApi(livePurchaseRoutes(OFFER, INTENT, { txHash: TX_HASH }))
 
     const user = userEvent.setup()
-    renderApp(`/packages/${PACKAGE.id}`, { wallet: WALLET, session: SESSION })
-    await screen.findByRole('heading', { name: PACKAGE.title, level: 1 })
+    renderApp(`/pass/${CATALOG.id}`, { wallet: WALLET, session: SESSION })
+    await screen.findByRole('heading', { name: CATALOG.title, level: 1 })
 
-    const buy = buyButtons()[0]!
-    await user.click(buy)
-    await user.click(buy).catch(() => {})
+    await approveNativePayment(user)
+    await user.click(screen.queryByRole('button', { name: APPROVE_LABEL }) ?? buyButtons()[0]!).catch(() => {})
 
     await waitFor(() => expect(sendBasicTransactionWithData).toHaveBeenCalledTimes(1))
 
@@ -403,22 +412,20 @@ describe('transaction submission', () => {
     sendBasicTransactionWithData.mockResolvedValue(TX_HASH)
     let submissions = 0
 
-    mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
-      'POST /api/v1/purchases': () => ok(INTENT, 201),
-      [`POST /api/v1/purchases/${PURCHASE_ID}/transactions`]: () => {
-        submissions += 1
-        // Same hash, same answer, every time.
-        return ok({ ...INTENT, status: 'verifying', paymentRequest: null, transactionHash: TX_HASH }, 202)
-      },
-      [`/api/v1/purchases/${PURCHASE_ID}`]: () =>
-        ok({ ...INTENT, status: 'verifying', paymentRequest: null, transactionHash: TX_HASH }),
-    })
+    mockApi(
+      livePurchaseRoutes(OFFER, INTENT, {
+        txHash: TX_HASH,
+        submit: () => {
+          submissions += 1
+          return ok({ ...INTENT, status: 'verifying', paymentRequest: null, transactionHash: TX_HASH }, 202)
+        },
+      }),
+    )
 
     const user = userEvent.setup()
-    renderApp(`/packages/${PACKAGE.id}`, { wallet: WALLET, session: SESSION })
-    await screen.findByRole('heading', { name: PACKAGE.title, level: 1 })
-    await user.click(buyButtons()[0]!)
+    renderApp(`/pass/${CATALOG.id}`, { wallet: WALLET, session: SESSION })
+    await screen.findByRole('heading', { name: CATALOG.title, level: 1 })
+    await approveNativePayment(user)
 
     expect(await screen.findByText('Confirming your payment…')).toBeInTheDocument()
     expect(submissions).toBe(1)
@@ -432,19 +439,16 @@ describe('transaction submission', () => {
     // money stayed put, since the wallet has already broadcast.
     sendBasicTransactionWithData.mockResolvedValue(TX_HASH)
 
-    mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
-      'POST /api/v1/purchases': () => ok(INTENT, 201),
-      [`POST /api/v1/purchases/${PURCHASE_ID}/transactions`]: () =>
-        domainError(409, 'PAYMENT_CONFLICT', 'Payment state conflict'),
-      [`/api/v1/purchases/${PURCHASE_ID}`]: () =>
-        ok({ ...INTENT, status: 'transaction_submitted', paymentRequest: null }),
-    })
+    mockApi(
+      livePurchaseRoutes(OFFER, INTENT, {
+        submit: () => domainError(409, 'PAYMENT_CONFLICT', 'Payment state conflict'),
+      }),
+    )
 
     const user = userEvent.setup()
-    renderApp(`/packages/${PACKAGE.id}`, { wallet: WALLET, session: SESSION })
-    await screen.findByRole('heading', { name: PACKAGE.title, level: 1 })
-    await user.click(buyButtons()[0]!)
+    renderApp(`/pass/${CATALOG.id}`, { wallet: WALLET, session: SESSION })
+    await screen.findByRole('heading', { name: CATALOG.title, level: 1 })
+    await approveNativePayment(user)
 
     expect(await screen.findByText(/Don't send another one/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
@@ -467,7 +471,7 @@ describe('the recovery parameter is not a redirect', () => {
     const hostile = 'https://evil.example/steal'
 
     const { calls } = mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
       // Whatever the id looks like, it is used to build one API path and
       // nothing else — percent-encoded, so it cannot break out of the path
       // segment it occupies. A non-uuid is simply a purchase the backend does
@@ -477,14 +481,14 @@ describe('the recovery parameter is not a redirect', () => {
     })
 
     const { router } = renderApp(
-      `/packages/${PACKAGE.id}?purchase=${encodeURIComponent(hostile)}`,
+      `/pass/${CATALOG.id}?purchase=${encodeURIComponent(hostile)}`,
       { wallet: WALLET, session: SESSION },
     )
 
-    await screen.findByRole('heading', { name: PACKAGE.title, level: 1 })
+    await screen.findByRole('heading', { name: CATALOG.title, level: 1 })
 
-    // Still on the package route, on this origin.
-    expect(router.state.location.pathname).toBe(`/packages/${PACKAGE.id}`)
+    // Still on the pass route, on this origin.
+    expect(router.state.location.pathname).toBe(`/pass/${CATALOG.id}`)
     // Every request went to our own API, and the hostile value stayed inside a
     // single encoded path segment rather than becoming a host of its own.
     for (const call of calls) {
@@ -504,13 +508,13 @@ describe('the recovery parameter is not a redirect', () => {
     const OTHERS = 'aaaaaaaa-0000-4000-8000-0000000000ee'
 
     mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
       [`/api/v1/purchases/${OTHERS}`]: () => domainError(403, 'FORBIDDEN', 'not yours'),
     })
 
-    renderApp(`/packages/${PACKAGE.id}?purchase=${OTHERS}`, { wallet: WALLET, session: SESSION })
+    renderApp(`/pass/${CATALOG.id}?purchase=${OTHERS}`, { wallet: WALLET, session: SESSION })
 
-    await screen.findByRole('heading', { name: PACKAGE.title, level: 1 })
+    await screen.findByRole('heading', { name: CATALOG.title, level: 1 })
     await waitFor(() => expect(buyButtons()[0]).toBeEnabled())
     expect(screen.queryByText('Checking your payment…')).not.toBeInTheDocument()
     expect(screen.queryByText(/could not be issued/i)).not.toBeInTheDocument()
@@ -539,20 +543,26 @@ describe('a new intent after the old one expired', () => {
 
     const keys: (string | undefined)[] = []
     let creates = 0
+    let paid = false
 
     const { fetchMock } = mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
       'POST /api/v1/purchases': () => ok(creates++ === 0 ? SPENT : FRESH, 201),
-      [`POST /api/v1/purchases/${FRESH.purchaseIntentId}/transactions`]: () =>
-        ok({ ...FRESH, status: 'verifying', paymentRequest: null, transactionHash: TX_HASH }, 202),
-      [`/api/v1/purchases/${FRESH.purchaseIntentId}`]: () =>
-        ok({ ...FRESH, status: 'verifying', paymentRequest: null, transactionHash: TX_HASH }),
+      [`POST /api/v1/purchases/${FRESH.purchaseIntentId}/wallet-attempts`]: () => ok(FRESH, 201),
+      [`POST /api/v1/purchases/${FRESH.purchaseIntentId}/transactions`]: () => {
+        paid = true
+        return ok({ ...FRESH, status: 'verifying', paymentRequest: null, transactionHash: TX_HASH }, 202)
+      },
+      [`GET /api/v1/purchases/${FRESH.purchaseIntentId}`]: () =>
+        ok(paid
+          ? { ...FRESH, status: 'verifying', paymentRequest: null, transactionHash: TX_HASH }
+          : FRESH),
     })
 
     const user = userEvent.setup()
-    renderApp(`/packages/${PACKAGE.id}`, { wallet: WALLET, session: SESSION })
-    await screen.findByRole('heading', { name: PACKAGE.title, level: 1 })
-    await user.click(buyButtons()[0]!)
+    renderApp(`/pass/${CATALOG.id}`, { wallet: WALLET, session: SESSION })
+    await screen.findByRole('heading', { name: CATALOG.title, level: 1 })
+    await approveNativePayment(user)
 
     // The customer is not stuck: the payment proceeds on the new intent.
     await waitFor(() => expect(sendBasicTransactionWithData).toHaveBeenCalledTimes(1))
@@ -586,15 +596,15 @@ describe('a new intent after the old one expired', () => {
     })
 
     const { calls } = mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
       'POST /api/v1/purchases': () => ok(PAID_BUT_EXPIRED, 200),
       [`/api/v1/purchases/${PURCHASE_ID}`]: () => ok(PAID_BUT_EXPIRED),
     })
 
     const user = userEvent.setup()
-    renderApp(`/packages/${PACKAGE.id}`, { wallet: WALLET, session: SESSION })
-    await screen.findByRole('heading', { name: PACKAGE.title, level: 1 })
-    await user.click(buyButtons()[0]!)
+    renderApp(`/pass/${CATALOG.id}`, { wallet: WALLET, session: SESSION })
+    await screen.findByRole('heading', { name: CATALOG.title, level: 1 })
+    await startPurchaseIntent(user)
 
     await waitFor(() =>
       expect(calls.some((c) => c.url === '/api/v1/purchases' && c.method === 'POST')).toBe(true),
@@ -608,20 +618,77 @@ describe('a new intent after the old one expired', () => {
   it('leaves a compensation case alone rather than starting over', async () => {
     // The same rule at its most consequential: a verified payment with no pass
     // must never be answered with a fresh intent.
+    const compensated = aCompensationPurchase()
     const { calls } = mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
-      'POST /api/v1/purchases': () => ok(aCompensationPurchase(), 200),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
+      'POST /api/v1/purchases': () => ok(compensated, 200),
+      [`GET /api/v1/purchases/${compensated.purchaseIntentId}`]: () => ok(compensated),
+      [`/api/v1/purchases/${compensated.purchaseIntentId}`]: () => ok(compensated),
     })
 
     const user = userEvent.setup()
-    renderApp(`/packages/${PACKAGE.id}`, { wallet: WALLET, session: SESSION })
-    await screen.findByRole('heading', { name: PACKAGE.title, level: 1 })
-    await user.click(buyButtons()[0]!)
+    renderApp(`/pass/${CATALOG.id}`, { wallet: WALLET, session: SESSION })
+    await screen.findByRole('heading', { name: CATALOG.title, level: 1 })
+    await startPurchaseIntent(user)
 
     expect(
       await screen.findByText('Payment received, but your pass could not be issued'),
     ).toBeInTheDocument()
     expect(calls.filter((c) => c.url === '/api/v1/purchases' && c.method === 'POST')).toHaveLength(1)
     expect(sendBasicTransactionWithData).not.toHaveBeenCalled()
+  })
+
+  it('lets the customer abandon an intent after dismissing the wallet', async () => {
+    // Dismissing the native sheet leaves an intent nobody paid. The customer
+    // can try again — or let it go, which is what `POST /purchases/{id}/cancel`
+    // is for: abandoning an intention, never undoing a payment (§55).
+    getNetworkReadiness.mockResolvedValue({ consensusEstablished: true, blockNumber: 1 })
+    sendBasicTransactionWithData.mockRejectedValue(
+      new NimiqOperationError(nimiqError('USER_REJECTED')),
+    )
+
+    const { calls } = mockApi({
+      ...livePurchaseRoutes(OFFER, INTENT),
+      [`POST /api/v1/purchases/${PURCHASE_ID}/cancel`]: () =>
+        ok({ ...INTENT, status: 'cancelled', purchaseStatus: 'CANCELLED', paymentRequest: null }),
+    })
+
+    const user = userEvent.setup()
+    renderApp(`/pass/${CATALOG.id}`, { wallet: WALLET, session: SESSION })
+
+    await approveNativePayment(user)
+    expect(await screen.findByText('Payment cancelled')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /don't want this anymore/i }))
+
+    await waitFor(() =>
+      expect(calls.some((call) => call.url === `/api/v1/purchases/${PURCHASE_ID}/cancel`)).toBe(
+        true,
+      ),
+    )
+    // The intent was released; no payment was ever made.
+    expect(sendBasicTransactionWithData).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers no cancellation once a transaction may exist', async () => {
+    mockApi({
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
+      [`GET /api/v1/purchases/${PURCHASE_ID}`]: () =>
+        ok({ ...INTENT, status: 'verifying', paymentRequest: null, transactionHash: TX_HASH }),
+      [`/api/v1/purchases/${PURCHASE_ID}`]: () =>
+        ok({ ...INTENT, status: 'verifying', paymentRequest: null, transactionHash: TX_HASH }),
+    })
+
+    renderApp(`/pass/${CATALOG.id}?purchase=${PURCHASE_ID}`, {
+      wallet: WALLET,
+      session: SESSION,
+    })
+
+    await screen.findByText('Confirming your payment…')
+    // A "cancel" here would read as "get my money back", which this endpoint
+    // cannot do and the product does not offer.
+    expect(
+      screen.queryByRole('button', { name: /don't want this anymore/i }),
+    ).not.toBeInTheDocument()
   })
 })

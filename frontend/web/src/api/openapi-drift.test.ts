@@ -55,8 +55,8 @@ function specPaths(): string[] {
 /**
  * Request paths the API modules construct.
  *
- * Template holes become `{}` so `/api/v1/packages/${id}/publish` compares
- * against the spec's `/packages/{packageID}/publish`.
+ * Template holes become `{}` so `/api/v1/catalog/passes/${id}/publish` compares
+ * against the spec's `/catalog/passes/{passID}/publish`.
  */
 function frontendPaths(): { file: string; path: string }[] {
   const found: { file: string; path: string }[] = []
@@ -89,7 +89,7 @@ describe('OpenAPI drift', () => {
     // A silently-empty spec read would make every assertion below vacuous.
     expect(declared.length).toBeGreaterThan(10)
     expect(declared).toContain('/auth/sessions')
-    expect(declared).toContain('/public/packages')
+    expect(declared).toContain('/public/passes')
   })
 
   it('calls no route the contract does not declare', () => {
@@ -104,31 +104,48 @@ describe('OpenAPI drift', () => {
     ).toEqual([])
   })
 
-  it('addresses providers, services and packages by id, as the spec does', () => {
-    // The spec's parameters are all `format: uuid`. docs/08-ARCHITECTURE.md §80
-    // asks for readable provider slugs instead; the contract has none, so the
-    // frontend uses ids and that difference is reported rather than papered
-    // over with a client-side slug table.
+  it('resolves shared provider links through the contract slug, not a local table', () => {
+    // docs/08-ARCHITECTURE.md §80 asks for readable provider URLs. The contract
+    // now serves them, so the frontend must use that route rather than keeping
+    // a slug→id map of its own, which would go stale the moment a provider is
+    // created anywhere else.
     const spec = readFileSync(SPEC, 'utf8')
     expect(spec).toContain('ProviderID: { in: path, name: providerID')
-    expect(spec).not.toMatch(/name:\s*slug/)
+    expect(spec).toContain('/public/providers/by-slug/{slug}')
+
+    const calls = frontendPaths().map((entry) => entry.path)
+    expect(calls).toContain('/public/providers/by-slug/{}')
   })
 
-  it('has no client-side category concept, because the contract has none', () => {
-    // `Service` and `Package` carry no category in the spec. Filtering by one
-    // would be sorting on an attribute the domain does not have.
+  it('takes the category taxonomy from the backend, member for member', () => {
+    // A category the frontend invents is a VALIDATION_ERROR on
+    // `/public/passes`, and one the backend adds is a filter nobody ever
+    // sees. Both directions are compared, so either drift fails here rather
+    // than in the field.
     const spec = readFileSync(SPEC, 'utf8')
-    expect(spec).not.toMatch(/\bcategory\b/i)
+    expect(spec).toContain('/public/categories')
 
-    for (const file of readdirSync(API_DIR)) {
-      if (!file.endsWith('.ts') || file.includes('.test.')) continue
-      // Comments stripped: a note explaining *why* there is no category filter
-      // must not read as evidence that there is one.
-      const code = readFileSync(join(API_DIR, file), 'utf8')
-        .replace(/\/\*[\s\S]*?\*\//g, ' ')
-        .replace(/(^|[^:])\/\/.*$/gm, '$1')
-      expect(code, `${file} still has a category concept`).not.toMatch(/\bcategory\b/)
-    }
+    const declared = enumMembers('category', spec.slice(spec.indexOf('  /public/passes:')))
+      .filter((value) => value !== "''" && value !== 'null')
+      .map((value) => value.replace(/'/g, ''))
+    expect(declared.length).toBeGreaterThan(0)
+
+    const source = readFileSync(join(SRC_DIR, 'types', 'domain.ts'), 'utf8')
+    const constant = /export const CATEGORIES = \[([\s\S]*?)\] as const/.exec(source)
+    const frontend = [...(constant?.[1] ?? '').matchAll(/'([^']+)'/g)].map((match) => match[1]!)
+
+    expect(frontend).toEqual(declared)
+  })
+
+  it('reads the filter options from the endpoint rather than shipping a copy', () => {
+    // The typed union exists for the compiler. What the *filter* offers has to
+    // come from `GET /public/categories`, or a taxonomy change on the backend
+    // would need a frontend release to become usable.
+    const calls = frontendPaths().map((entry) => entry.path)
+    expect(calls).toContain('/public/categories')
+
+    const discover = readFileSync(join(SRC_DIR, 'pages', 'discover.tsx'), 'utf8')
+    expect(discover).toContain('useCategories()')
   })
 })
 
@@ -185,15 +202,24 @@ describe('Mission 03 purchase contract drift', () => {
     const source = specText()
     const compensation = source.slice(
       source.indexOf('    Compensation:'),
-      source.indexOf('    Purchase:'),
+      source.indexOf('    Settlement:'),
     )
 
     // The flags are properties of `Compensation`, not of `Purchase`. Reading
     // them off the purchase root yields `undefined` — falsy — which inverts
     // exactly the guarantee `doNotPayAgain` encodes.
-    expect(compensation).toContain('doNotPayAgain: { type: boolean, enum: [true] }')
+    expect(compensation).toMatch(/doNotPayAgain: \{ type: boolean,/)
     expect(compensation).toContain('automatedRefund: { type: boolean, enum: [false] }')
-    expect(compensation).toContain('PACKAGE_EXPIRED_BEFORE_ACTIVATION')
+
+    // `doNotPayAgain` stopped being a constant when fast settlement gave
+    // compensation a second reason (ADR-021). It is true for the original
+    // case — real money arrived and a second payment would be lost — and
+    // false for a reversed settlement, where no NIM ever left the wallet and
+    // the customer may buy again. Pinning it to `enum: [true]` here would
+    // mean the contract could never say the second thing.
+    expect(compensation).toContain('PASS_EXPIRED_BEFORE_ACTIVATION')
+    expect(compensation).toContain('PAYMENT_SETTLEMENT_REVERSED')
+    expect(compensation).not.toContain('doNotPayAgain: { type: boolean, enum: [true] }')
 
     const purchase = source.slice(source.indexOf('    Purchase:'), source.indexOf('    Pass:'))
     expect(purchase).toContain('compensation')
@@ -201,28 +227,88 @@ describe('Mission 03 purchase contract drift', () => {
     expect(purchase).not.toMatch(/^\s+automatedRefund:/m)
   })
 
-  it('still declares PACKAGE_PURCHASE_CUTOFF as an error code', () => {
+  it('describes settlement as its own object, separate from purchase status', () => {
+    // The two answer different questions — "can the customer have their pass"
+    // and "is the payment irreversible yet" — and fast checkout depends on
+    // them being allowed to disagree (ADR-021). Flattening settlement onto the
+    // purchase root, or teaching the frontend to gate the pass on it, is how
+    // the macro-block wait comes back.
+    const source = specText()
+    const settlement = source.slice(
+      source.indexOf('    Settlement:'),
+      source.indexOf('    Purchase:'),
+    )
+    expect(settlement).not.toHaveLength(0)
+
+    // `status` is written in block style here because its description is a
+    // paragraph, so the flow-style reader above cannot see it. Its enum is the
+    // only one in the schema.
+    const statuses = (/enum: \[([^\]]*)\]/.exec(settlement)?.[1] ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+    expect(new Set(unionMembers('types/domain.ts', 'SettlementStatus'))).toEqual(new Set(statuses))
+
+    // Inclusion is always known; finality is not known until it happens. A
+    // spec that made the finality fields required would be unable to express a
+    // provisional receipt at all — the defect this mission fixed in the
+    // database, repeated in the contract.
+    for (const required of ['inclusionBlock', 'includedAt', 'expectedFinalityBlock']) {
+      expect(settlement).toContain(required)
+    }
+    for (const nullable of ['finalityBlock', 'finalizedAt', 'contestedAt']) {
+      expect(settlement, `${nullable} must be nullable`).toMatch(
+        new RegExp(`${nullable}: \\{[^}]*nullable: true`),
+      )
+    }
+
+    const purchase = source.slice(source.indexOf('    Purchase:'), source.indexOf('    Pass:'))
+    expect(purchase).toContain("$ref: '#/components/schemas/Settlement'")
+  })
+
+  it('still declares PASS_PURCHASE_CUTOFF as an error code', () => {
     // The cutoff reaches the frontend only as this code on a 409. If the
     // backend renamed it, the dedicated UI would silently become a generic
     // failure (§8, §39).
-    expect(specText()).toContain('PACKAGE_PURCHASE_CUTOFF')
+    expect(specText()).toContain('PASS_PURCHASE_CUTOFF')
   })
 
-  it('has no pass list endpoint, which is why My Passes goes through purchases', () => {
-    // Documents the gap rather than hiding it. When a list endpoint appears,
-    // this fails and `use-passes.ts` should stop fanning out over purchases.
-    const declared = specPaths()
-    expect(declared).not.toContain('/passes')
-    expect(declared).not.toContain('/me/passes')
+  it('lists passes through the contract endpoint, not through purchases', () => {
+    // My Passes used to be assembled from `GET /purchases` plus one read per
+    // `passId`, because there was no list endpoint. There is now, and a pass
+    // that no purchase in the first hundred produced would be invisible under
+    // the old scheme — so the fan-out must stay gone.
+    expect(specPaths()).toContain('/passes')
+
+    const calls = frontendPaths().map((entry) => entry.path)
+    expect(calls).toContain('/passes')
+
+    const hook = readFileSync(join(SRC_DIR, 'hooks', 'use-passes.ts'), 'utf8')
+    expect(hook).toContain('passesApi.listPasses')
+    expect(hook, 'the purchase fan-out is back').not.toContain('useMyPurchases')
   })
 
-  it('leaves passId nullable, so the pass-provisioning state stays justified', () => {
+  it('pages passes with the parameters the spec documents', () => {
+    const spec = readFileSync(SPEC, 'utf8')
+    const passes = spec.slice(spec.indexOf('  /passes:'), spec.indexOf('  /passes/{passID}:'))
+    for (const parameter of ['limit', 'status', 'cursor']) {
+      expect(passes, `/passes lost its ${parameter} parameter`).toContain(`name: ${parameter}`)
+    }
+    expect(spec).toContain('nextCursor')
+
+    const api = readFileSync(join(API_DIR, 'passes.ts'), 'utf8')
+    for (const parameter of ['limit', 'status', 'cursor']) {
+      expect(api).toContain(parameter)
+    }
+  })
+
+  it('leaves purchasedPassId nullable, so the pass-provisioning state stays justified', () => {
     // §24: the transitional "confirmed, no pass yet" UI is kept only because
-    // the contract still permits that shape. If `passId` stops being nullable
+    // the contract still permits that shape. If `purchasedPassId` stops being nullable
     // or `pass_provisioning` disappears, this fails and that UI should go.
     const source = specText()
     const purchase = source.slice(source.indexOf('    Purchase:'), source.indexOf('    Pass:'))
-    expect(purchase).toContain('passId: { type: string, format: uuid, nullable: true }')
+    expect(purchase).toContain('purchasedPassId: { type: string, format: uuid, nullable: true }')
     expect(enumMembers('status', source.slice(source.indexOf('    Purchase:')))).toContain(
       'pass_provisioning',
     )
@@ -250,8 +336,6 @@ describe('redemption contract lock', () => {
     '/redemption-challenges/{challengeID}',
     '/redemption-challenges/{challengeID}/authorization',
     '/providers/{providerID}/redemptions',
-    '/providers/{providerID}/redemptions/lookup',
-    '/providers/{providerID}/redemptions/confirm',
   ]
 
   function schemaFor(name: string, until: string): string {
@@ -261,26 +345,31 @@ describe('redemption contract lock', () => {
 
   it('declares every redemption route the frontend calls', () => {
     const declared = specPaths()
-    for (const route of CANONICAL_ROUTES) expect(declared).toContain(route)
+    for (const route of CANONICAL_ROUTES) {
+      expect(declared, `spec dropped ${route}`).toContain(route)
+    }
   })
 
-  it('calls the lookup and confirm routes as two separate endpoints', () => {
-    // The separation *is* the security property: one reads, one consumes. If
-    // they ever collapse into one path, scanning would spend a session (§18).
+  it('has no provider write path into a redemption, on either side', () => {
+    // A session is spent by the person who owns the pass. The provider lookup
+    // and confirm routes are gone from the contract, and the confirm was where
+    // a session used to be consumed — so their absence is the product rule,
+    // not a tidy-up. A reappearing path here would restore the old model
+    // silently (docs/01-PRODUCT.md §24-§25).
     const declared = specPaths()
-    expect(declared).toContain('/providers/{providerID}/redemptions/lookup')
-    expect(declared).toContain('/providers/{providerID}/redemptions/confirm')
+    expect(declared).not.toContain('/providers/{providerID}/redemptions/lookup')
+    expect(declared).not.toContain('/providers/{providerID}/redemptions/confirm')
 
     const source = readFileSync(join(API_DIR, 'redemptions.ts'), 'utf8')
-    expect(source).toContain('/redemptions/lookup')
-    expect(source).toContain('/redemptions/confirm')
+    expect(source).not.toContain('/redemptions/lookup')
+    expect(source).not.toContain('/redemptions/confirm')
   })
 
   it('requires a wallet signature for every redemption, with no optional path', () => {
-    // `RedemptionAuthorization` requires both fields, and authorization is the
-    // only route that yields a usable reference. There is no flag anywhere that
+    // `RedemptionAuthorization` requires both fields, and authorization is now
+    // the only route that consumes anything. There is no flag anywhere that
     // makes signing skippable — and the frontend must not model one (§10).
-    expect(schemaFor('RedemptionAuthorization', 'RedemptionConfirmation')).toContain(
+    expect(schemaFor('RedemptionAuthorization', 'RedemptionChallenge')).toContain(
       'required: [publicKey, signature]',
     )
     expect(specText()).not.toMatch(/requiresWalletSignature/)
@@ -291,62 +380,29 @@ describe('redemption contract lock', () => {
     )
   })
 
-  it('issues the QR reference only after authorisation, never with the challenge', () => {
-    // `redemptionReference` appears on two schemas and means two different
-    // things: required on `RedemptionConfirmation` (the provider sends it),
-    // nullable on `RedemptionChallenge` (the customer receives it, and only
-    // once authorised). Read the challenge's copy specifically.
-    const challenge = schemaFor('RedemptionChallenge', 'RedemptionHistory')
-    const line = challenge
-      .split('\n')
-      .find((row) => row.trim().startsWith('redemptionReference:'))
-
-    expect(line).toBeDefined()
-    expect(line).toContain('nullable: true')
-    expect(line).toContain('Present only in the authorization response')
-    expect(line).toContain('NR1:')
-
-    expect(schemaFor('RedemptionConfirmation', 'RedemptionLookup')).toContain(
-      'required: [redemptionReference]',
-    )
-  })
-
-  it('documents rotation as the way to re-issue a reference', () => {
-    // The frontend's only recovery path after a reload. If this stops being
-    // true, `restoreReference` silently becomes a way to strand customers.
+  it('mints no bearer reference anywhere', () => {
+    // The NR1 reference existed so a customer could hand something to a
+    // provider. With nobody to hand it to, issuing one would be a credential
+    // with no purpose and a replay surface with no owner.
     const source = specText()
-    expect(source).toContain('An authorized challenge may rotate its opaque NR1 reference')
-    expect(source).toContain('the previous reference is invalidated')
-  })
+    expect(source).not.toContain('NR1:')
+    expect(source).not.toContain('redemptionReference')
+    expect(source).not.toContain('qrExpiresAt')
 
-  it('states that reading a challenge back omits the reference', () => {
-    expect(specText()).toContain('without returning the bearer QR reference')
-  })
-
-  it('states that lookup consumes nothing', () => {
-    expect(specText()).toContain('never consumes a session or creates a Redemption')
-  })
-
-  it('binds a challenge to one provider', () => {
-    expect(schemaFor('RedemptionChallenge', 'RedemptionHistory')).toContain(
-      'providerId: { type: string, format: uuid }',
-    )
-  })
-
-  it('returns the authoritative balance from confirmation', () => {
-    expect(schemaFor('RedemptionConfirmationResult', 'Proof')).toContain(
-      'required: [redemptionId, passId, redeemedAt, usedSessions, remainingSessions, passStatus, completed]',
-    )
-  })
-
-  it('keeps the lookup response free of customer identity', () => {
-    // Privacy-minimised by contract, and the frontend must not go looking for
-    // more than it returns (§19, §20).
-    const lookup = schemaFor('RedemptionLookup', 'RedemptionChallenge')
-    for (const field of ['ownerWallet', 'customerWallet', 'email', 'identityId']) {
-      expect(lookup, `lookup exposes ${field}`).not.toContain(field)
+    for (const file of ['redemptions.ts', '../types/domain.ts', '../types/redemption.ts']) {
+      const text = readFileSync(join(API_DIR, file), 'utf8')
+      expect(text, `${file} still models a bearer reference`).not.toContain('NR1:')
     }
-    expect(lookup).toContain('nextSessionOrdinal')
+  })
+
+  it('consumes the session on the authorization response itself', () => {
+    // The authorization response is the redemption: it carries the consumed
+    // record and the counts the backend wrote in the same transaction, so the
+    // frontend never has to compute or poll for them.
+    const challenge = schemaFor('RedemptionChallenge', 'RedemptionHistory')
+    expect(challenge).toContain('redemption')
+    expect(challenge).toContain('pass')
+    expect(specText()).toContain('consumes exactly one session in the same transaction')
   })
 
   it('declares the redemption error codes the frontend writes copy for', () => {
@@ -358,16 +414,9 @@ describe('redemption contract lock', () => {
       'REDEMPTION_NOT_AUTHORIZED',
       'INVALID_REDEMPTION_SIGNATURE',
       'STALE_REDEMPTION_CHALLENGE',
-      'INVALID_REDEMPTION_TOKEN',
     ]) {
       expect(source, `spec dropped ${code}`).toContain(code)
       expect(errors, `${code} has no human copy`).toContain(code)
     }
-  })
-
-  it('spells the reference the same way on both sides', () => {
-    expect(specText()).toContain("pattern: '^NR1:[0-9a-f]{64}$'")
-    const source = readFileSync(join(API_DIR, 'redemptions.ts'), 'utf8')
-    expect(source).toContain('/^NR1:[0-9a-f]{64}$/')
   })
 })

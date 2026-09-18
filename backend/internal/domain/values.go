@@ -102,9 +102,35 @@ func ParseNIM(value string) (Luna, error) {
 
 type SessionCount int32
 
+// MaxSessionsPerPass is the largest number of sessions one Pass may be sold
+// with, and it is a safety bound before it is a product one.
+//
+// Every session a Pass is sold with becomes a row at purchase time — that is
+// ADR-012's decision and the reason a session has an identity at all. The
+// count therefore stops being a number on a form the moment somebody buys:
+// `NewPassSessions` allocates one struct per session and the repository
+// writes one row per session, inside the transaction that issues the Pass.
+//
+// Unbounded, that is a way to kill the server with a purchase. A Pass created
+// with two billion sessions costs a provider nothing and one Luna to buy, and
+// the allocation alone is hundreds of gigabytes — a fatal out-of-memory in the
+// settlement worker, which no recover() can catch. Smaller-but-large values do
+// not crash it; they exceed `ReconcileDue`'s eight-second budget, so the
+// purchase never confirms and the customer has paid for a Pass that cannot
+// issue while the retry burns a worker slot on every sweep.
+//
+// 500 is the number the Pass form has always shown providers
+// ("That looks too high. Enter 500 or fewer."). Until now it was enforced
+// only there, which made it a suggestion to anybody posting the request
+// directly.
+const MaxSessionsPerPass SessionCount = 500
+
 func NewSessionCount(value int32) (SessionCount, error) {
 	if value <= 0 {
 		return 0, errors.New("session count must be positive")
+	}
+	if SessionCount(value) > MaxSessionsPerPass {
+		return 0, fmt.Errorf("session count must be at most %d", MaxSessionsPerPass)
 	}
 	return SessionCount(value), nil
 }
@@ -133,4 +159,22 @@ func NewPaymentReference() (PaymentReference, error) {
 		return "", fmt.Errorf("generate payment reference: %w", err)
 	}
 	return PaymentReference("NP1:" + hex.EncodeToString(raw[:])), nil
+}
+
+// NIM renders Luna as exact decimal NIM text, with no trailing fractional
+// zeros and no floating point anywhere. It is the inverse of ParseNIM and the
+// only place a Luna amount becomes a decimal string for a payment instruction:
+// the Nimiq request-link encoder carries `amount` in decimal NIM, not Luna
+// (nimiq-utils RequestLinkEncoding.ts moves the separator by DECIMALS[NIM]=5).
+func (l Luna) NIM() string {
+	if l < 0 {
+		return "0"
+	}
+	whole := int64(l) / int64(LunaPerNIM)
+	fraction := int64(l) % int64(LunaPerNIM)
+	if fraction == 0 {
+		return strconv.FormatInt(whole, 10)
+	}
+	digits := strings.TrimRight(fmt.Sprintf("%05d", fraction), "0")
+	return strconv.FormatInt(whole, 10) + "." + digits
 }

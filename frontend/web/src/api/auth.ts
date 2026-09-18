@@ -1,4 +1,4 @@
-import type { AuthChallenge, AuthSession, WalletSignature } from '@/types/auth'
+import type { AuthChallenge, AuthSession, SigningScheme, WalletSignature } from '@/types/auth'
 
 import { apiRequest } from './client'
 
@@ -43,14 +43,24 @@ export function requestAuthChallenge(
  * wallet proves nothing on its own — the backend derives the signer from
  * `publicKey` and requires it to match the challenge's wallet (§19).
  *
- * `publicKey` and `signature` are passed through byte-for-byte as Nimiq Pay
+ * `publicKey` and `signature` are passed through byte-for-byte as the wallet
  * returned them. Nimpass does not re-encode, pad or normalise them: whether the
- * wallet's `sign()` output interoperates with the backend's Ed25519
+ * Mini App host's `sign()` output interoperates with the backend's Ed25519
  * verification is unverified against a real device, and quietly "fixing" the
  * encoding here would hide that rather than settle it.
+ *
+ * `signingScheme` is the one thing the client may say about *how* the bytes
+ * were produced, and it is sent only when the transport documents its own
+ * preprocessing — which today means the Nimiq Hub. Omitting it leaves the
+ * backend on its configured `NIMIQ_SIGNING_SCHEME`, so the Mini App path is
+ * byte-identical to before this field existed.
  */
 export function verifyAuthSignature(
-  input: { challengeId: string; wallet: string } & WalletSignature,
+  input: {
+    challengeId: string
+    wallet: string
+    signingScheme?: SigningScheme | null
+  } & WalletSignature,
   options: { signal?: AbortSignal } = {},
 ): Promise<AuthSession> {
   return apiRequest<AuthSession>('/api/v1/auth/sessions', {
@@ -60,6 +70,7 @@ export function verifyAuthSignature(
       wallet: input.wallet,
       publicKey: input.publicKey,
       signature: input.signature,
+      ...(input.signingScheme ? { signingScheme: input.signingScheme } : {}),
     },
     signal: options.signal,
   })

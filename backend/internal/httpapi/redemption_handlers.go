@@ -7,10 +7,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"nimpass/backend/internal/application"
-	"nimpass/backend/internal/domain"
 )
 
-func redemptionDTO(view application.RedemptionView, includeQR bool) map[string]any {
+func redemptionDTO(view application.RedemptionView) map[string]any {
 	challenge := view.Challenge
 	result := map[string]any{
 		"challengeId":  challenge.ID,
@@ -30,13 +29,10 @@ func redemptionDTO(view application.RedemptionView, includeQR bool) map[string]a
 			"remainingSessions": view.Pass.RemainingSessions,
 			"expiresAt":         view.Pass.ExpiresAt,
 		},
-		"redemption":          nil,
-		"redemptionReference": nil,
-		"qrExpiresAt":         nil,
-	}
-	if includeQR && view.QRReference != "" && challenge.Status == domain.RedemptionAuthorized {
-		result["redemptionReference"] = view.QRReference
-		result["qrExpiresAt"] = view.QRExpiresAt
+		"redemption": nil,
+		// The session this authorization spent, so the screen can say which
+		// one moved rather than only that the count went down.
+		"session": nil,
 	}
 	if view.HasRedemption {
 		result["redemption"] = map[string]any{
@@ -44,6 +40,9 @@ func redemptionDTO(view application.RedemptionView, includeQR bool) map[string]a
 			"sessionOrdinal": view.Redemption.SessionOrdinal,
 			"redeemedAt":     view.Redemption.ConsumedAt,
 		}
+	}
+	if view.HasSession {
+		result["session"] = passSessionDTO(view.Session)
 	}
 	return result
 }
@@ -57,7 +56,7 @@ func historyDTO(items []application.RedemptionHistoryItem) []any {
 			"passId":         item.PassID,
 			"providerId":     item.ProviderID,
 			"serviceId":      item.ServiceID,
-			"packageId":      item.PackageID,
+			"sourcePassId":   item.SourcePassID,
 			"sessionOrdinal": item.SessionOrdinal,
 			"ownerWallet":    item.OwnerWallet,
 			"redeemedAt":     item.ConsumedAt,
@@ -67,28 +66,9 @@ func historyDTO(items []application.RedemptionHistoryItem) []any {
 	return out
 }
 
-func redemptionLookupDTO(lookup application.RedemptionLookup) map[string]any {
-	return map[string]any{
-		"challengeId":         lookup.ChallengeID,
-		"passId":              lookup.PassID,
-		"providerId":          lookup.ProviderID,
-		"serviceName":         lookup.ServiceName,
-		"packageTitle":        lookup.PackageTitle,
-		"challengeStatus":     lookup.ChallengeStatus,
-		"authorizationStatus": lookup.AuthorizationStatus,
-		"passStatus":          lookup.PassStatus,
-		"usedSessions":        lookup.UsedSessions,
-		"remainingSessions":   lookup.RemainingSessions,
-		"nextSessionOrdinal":  lookup.NextSessionOrdinal,
-		"passExpiresAt":       lookup.PassExpiresAt,
-		"challengeExpiresAt":  lookup.ChallengeExpiresAt,
-		"referenceExpiresAt":  lookup.ReferenceExpiresAt,
-	}
-}
-
 func (h *handler) createRedemptionChallenge(w http.ResponseWriter, r *http.Request) {
 	s := sessionFrom(r)
-	if !h.limits.Allow("redemption-create:"+string(s.Identity.ID), 10, 5*time.Minute) {
+	if !h.allow(r, "redemption-create:"+string(s.Identity.ID), 10, 5*time.Minute) {
 		apiFailure(w, r, http.StatusTooManyRequests, "RATE_LIMITED", "Too many redemption challenges")
 		return
 	}
@@ -101,7 +81,7 @@ func (h *handler) createRedemptionChallenge(w http.ResponseWriter, r *http.Reque
 		mappedError(w, r, err)
 		return
 	}
-	respond(w, http.StatusOK, redemptionDTO(view, true))
+	respond(w, http.StatusOK, redemptionDTO(view))
 }
 
 func (h *handler) currentRedemptionChallenge(w http.ResponseWriter, r *http.Request) {
@@ -110,12 +90,12 @@ func (h *handler) currentRedemptionChallenge(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	view, err := h.redemptions.Store.CurrentChallenge(r.Context(), passID, s.Identity.ID, domain.WalletAddress(s.Identity.Wallet), time.Now().UTC())
+	view, err := h.redemptions.CurrentChallenge(r.Context(), s.Identity, passID)
 	if err != nil {
 		mappedError(w, r, err)
 		return
 	}
-	respond(w, http.StatusOK, redemptionDTO(view, false))
+	respond(w, http.StatusOK, redemptionDTO(view))
 }
 
 func (h *handler) getRedemptionChallenge(w http.ResponseWriter, r *http.Request) {
@@ -129,12 +109,12 @@ func (h *handler) getRedemptionChallenge(w http.ResponseWriter, r *http.Request)
 		mappedError(w, r, err)
 		return
 	}
-	respond(w, http.StatusOK, redemptionDTO(view, false))
+	respond(w, http.StatusOK, redemptionDTO(view))
 }
 
 func (h *handler) authorizeRedemption(w http.ResponseWriter, r *http.Request) {
 	s := sessionFrom(r)
-	if !h.limits.Allow("redemption-authorize:"+string(s.Identity.ID), 20, 5*time.Minute) {
+	if !h.allow(r, "redemption-authorize:"+string(s.Identity.ID), 20, 5*time.Minute) {
 		apiFailure(w, r, http.StatusTooManyRequests, "RATE_LIMITED", "Too many redemption authorization attempts")
 		return
 	}
@@ -145,6 +125,12 @@ func (h *handler) authorizeRedemption(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		PublicKey string `json:"publicKey"`
 		Signature string `json:"signature"`
+		// Which documented preprocessing produced the signature, or empty for
+		// the deployment's configured scheme. Named per authorization rather
+		// than per challenge: a challenge created inside Nimiq Pay can be
+		// signed in a browser after a reload, and the scheme belongs to the
+		// wallet that produced the bytes.
+		SigningScheme string `json:"signingScheme,omitempty"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -153,12 +139,16 @@ func (h *handler) authorizeRedemption(w http.ResponseWriter, r *http.Request) {
 		apiFailure(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "Invalid redemption signature fields")
 		return
 	}
-	view, err := h.redemptions.Authorize(r.Context(), s.Identity, id, req.PublicKey, req.Signature)
+	if !validSigningScheme(req.SigningScheme) {
+		apiFailure(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "Unsupported signing scheme")
+		return
+	}
+	view, err := h.redemptions.Authorize(r.Context(), s.Identity, id, req.PublicKey, req.Signature, req.SigningScheme)
 	if err != nil {
 		mappedError(w, r, err)
 		return
 	}
-	respond(w, http.StatusOK, redemptionDTO(view, true))
+	respond(w, http.StatusOK, redemptionDTO(view))
 }
 
 func (h *handler) listPassRedemptions(w http.ResponseWriter, r *http.Request) {
@@ -173,62 +163,6 @@ func (h *handler) listPassRedemptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, http.StatusOK, map[string]any{"items": historyDTO(items)})
-}
-
-func (h *handler) confirmRedemption(w http.ResponseWriter, r *http.Request) {
-	s := sessionFrom(r)
-	if !h.limits.Allow("redemption-confirm:"+string(s.Identity.ID), 30, 5*time.Minute) {
-		apiFailure(w, r, http.StatusTooManyRequests, "RATE_LIMITED", "Too many redemption confirmations")
-		return
-	}
-	providerID, ok := parsedID(w, r, chi.URLParam(r, "providerID"))
-	if !ok {
-		return
-	}
-	var req struct {
-		RedemptionReference string `json:"redemptionReference"`
-	}
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	view, err := h.redemptions.Confirm(r.Context(), s.Identity, providerID, req.RedemptionReference)
-	if err != nil {
-		mappedError(w, r, err)
-		return
-	}
-	respond(w, http.StatusOK, map[string]any{
-		"redemptionId":      view.Redemption.ID,
-		"passId":            view.Pass.ID,
-		"redeemedAt":        view.Redemption.ConsumedAt,
-		"usedSessions":      view.Pass.UsedSessions,
-		"remainingSessions": view.Pass.RemainingSessions,
-		"passStatus":        view.Pass.Status,
-		"completed":         view.Pass.Status == domain.PassCompleted,
-	})
-}
-
-func (h *handler) lookupRedemption(w http.ResponseWriter, r *http.Request) {
-	s := sessionFrom(r)
-	if !h.limits.Allow("redemption-lookup:"+string(s.Identity.ID), 30, 5*time.Minute) {
-		apiFailure(w, r, http.StatusTooManyRequests, "RATE_LIMITED", "Too many redemption lookups")
-		return
-	}
-	providerID, ok := parsedID(w, r, chi.URLParam(r, "providerID"))
-	if !ok {
-		return
-	}
-	var req struct {
-		RedemptionReference string `json:"redemptionReference"`
-	}
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	lookup, err := h.redemptions.Lookup(r.Context(), s.Identity, providerID, req.RedemptionReference)
-	if err != nil {
-		mappedError(w, r, err)
-		return
-	}
-	respond(w, http.StatusOK, redemptionLookupDTO(lookup))
 }
 
 func (h *handler) listProviderRedemptions(w http.ResponseWriter, r *http.Request) {

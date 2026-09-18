@@ -20,7 +20,9 @@ export type PaymentState =
   | { kind: 'CREATING_INTENT' }
   /** Intent exists; we know the recipient, exact amount and payment reference. */
   | { kind: 'INTENT_CREATED'; purchase: Purchase }
-  /** Nimiq Pay is showing its native approval sheet. The user may still reject. */
+  /**
+   * Nimiq Pay is showing its native payment approval. The user may reject.
+   */
   | { kind: 'AWAITING_WALLET'; purchase: Purchase }
   /** The wallet returned a transaction. Nothing is confirmed yet. */
   | { kind: 'TRANSACTION_SUBMITTED'; purchase: Purchase; transactionHash: string | null }
@@ -28,7 +30,17 @@ export type PaymentState =
   | { kind: 'VERIFYING'; purchase: Purchase }
   /** Verification is taking longer than expected. Still not a failure. */
   | { kind: 'VERIFICATION_DELAYED'; purchase: Purchase }
-  /** Transaction seen but not yet included deeply enough to be accepted. */
+  /**
+   * The chain has the transaction; the backend is not yet willing to settle on
+   * it.
+   *
+   * Only reachable under `NIMIQ_CONFIRMATION_POLICY=finality`, where the pass
+   * waits for the macro block. Under the product's own policy — `inclusion` —
+   * a validated canonical inclusion settles immediately and this state is
+   * skipped entirely, which is why nothing here says "waiting for finality"
+   * any more: most customers will never be in it, and the ones who are are
+   * waiting on a deployment's risk setting rather than on anything they did.
+   */
   | { kind: 'PENDING'; purchase: Purchase }
   /** Backend accepted the payment. The pass may not exist yet. */
   | { kind: 'CONFIRMED'; purchase: Purchase }
@@ -40,7 +52,7 @@ export type PaymentState =
    * Paid, verified, finalised — and no pass (§3 of this milestone).
    *
    * Not a failure and not an uncertainty: the backend knows exactly what
-   * happened. The money arrived, the package's fixed expiration passed before
+   * happened. The money arrived, the pass's fixed expiration passed before
    * the pass could be activated, and a compensation case was opened. The
    * customer holds a verified receipt, owes nothing further, and must not pay
    * again. `compensation` carries the backend's own case record; it is nullable
@@ -48,14 +60,48 @@ export type PaymentState =
    */
   | { kind: 'COMPENSATION_REQUIRED'; purchase: Purchase; compensation: Compensation | null }
   /**
-   * The backend refused a *new* intent because the package is too close to its
-   * fixed expiration to settle safely (409 PACKAGE_PURCHASE_CUTOFF).
+   * The backend refused a *new* intent because the pass is too close to its
+   * fixed expiration to settle safely (409 PASS_PURCHASE_CUTOFF).
    *
    * Nothing was charged, so this is not a payment failure — but it is not
    * retryable either, because the same call would be refused again. The cutoff
    * is the backend's decision and is never recomputed here.
    */
   | { kind: 'PURCHASE_CUTOFF'; purchase: null }
+  /**
+   * The backend refused the intent because this account created the pass
+   * (403 SELF_PURCHASE_NOT_ALLOWED).
+   *
+   * Nothing was charged and nothing can be: the same call will be refused
+   * again, because the provider on the pass is this account. Kept as its own
+   * state rather than folded into FAILED so the screen can say what is
+   * actually true — "this is your pass" — instead of reporting a payment
+   * problem to someone who was never going to pay.
+   */
+  | { kind: 'SELF_PURCHASE'; purchase: null }
+  /**
+   * The backend refused the intent because this customer is still holding a
+   * pass for it (409 PASS_ALREADY_OWNED).
+   *
+   * Nothing was charged. It is not a payment problem and not a retry — the same
+   * call is refused again for as long as the pass has sessions left on it — so
+   * it is its own state, and the screen it produces points at the pass they
+   * already have rather than at a way to pay for a second one. When that pass
+   * is finished, `Buy Again` sells the current terms exactly as documented
+   * (docs/01-PRODUCT.md §56).
+   */
+  | { kind: 'ALREADY_OWNED'; purchase: null }
+  /**
+   * The backend refused the intent because this customer's previous attempt at
+   * the same pass can still be paid (409 PURCHASE_IN_SETTLEMENT).
+   *
+   * An intent is payable for five minutes longer than it is current, so that a
+   * QR payment made in time but noticed late still settles. A second intent
+   * inside that window is how one customer pays twice for one pass, so the
+   * backend refuses it — and this is the one state where "Try again" would be
+   * actively dangerous. The wait is short and clears by itself.
+   */
+  | { kind: 'PURCHASE_IN_SETTLEMENT'; purchase: null }
   /** The user rejected the wallet dialog. A normal outcome, not an error (§57). */
   | { kind: 'CANCELLED'; purchase: Purchase | null }
   /** Terminal, definite failure. Safe to offer a retry. */
@@ -72,7 +118,7 @@ export type PaymentStateKind = PaymentState['kind']
 export type PaymentFailureReason =
   /** Wallet reported the account cannot cover the amount. */
   | 'INSUFFICIENT_FUNDS'
-  /** Nimiq Pay never produced a usable provider. */
+  /** No wallet transport could be reached at all. */
   | 'WALLET_UNAVAILABLE'
   /** The backend rejected the transaction (wrong amount, recipient, reuse…). */
   | 'REJECTED_BY_BACKEND'
@@ -87,18 +133,24 @@ export type PaymentFailureReason =
   | 'PAYMENT_CONFLICT'
   /** The purchase intent expired before the transaction landed. */
   | 'INTENT_EXPIRED'
-  /** Nimiq Pay rejected the transaction shape before broadcasting it. */
+  /** The wallet rejected the transaction shape before broadcasting it. */
   | 'INVALID_TRANSACTION'
   /** The wallet has no network consensus, so a payment would be unreliable. */
   | 'NO_CONSENSUS'
   /** Network problem, definitely before the wallet submitted anything (§60). */
   | 'NETWORK_BEFORE_SUBMIT'
-  /** Another native approval was already open, so this one never started. */
+  /** Another wallet approval was already open, so this one never started. */
   | 'WALLET_BUSY'
+  /**
+   * The browser blocked the wallet window before it could open. Nothing was
+   * sent, and the remedy belongs to the user — so this is retryable, unlike
+   * every other reason that mentions the wallet.
+   */
+  | 'POPUP_BLOCKED'
   /** Anything we could not classify. */
   | 'UNKNOWN'
 
-/** Provider-side error kinds that map onto a definite payment failure. */
+/** Wallet-side error kinds that map onto a definite payment failure. */
 export const WALLET_ERROR_TO_FAILURE_REASON: Record<
   Exclude<NimiqErrorKind, 'USER_REJECTED'>,
   PaymentFailureReason
@@ -107,6 +159,10 @@ export const WALLET_ERROR_TO_FAILURE_REASON: Record<
   PROVIDER_TIMEOUT: 'WALLET_UNAVAILABLE',
   PROVIDER_INIT_FAILED: 'WALLET_UNAVAILABLE',
   NO_ACCOUNTS: 'WALLET_UNAVAILABLE',
+  // The browser refused to open the Hub window, so the wallet was never asked
+  // and nothing was broadcast. Definitely safe to retry — the user allows
+  // pop-ups and presses Buy again.
+  POPUP_BLOCKED: 'POPUP_BLOCKED',
   // `InvalidTransactionError` is raised before anything is broadcast, so this
   // is a definite non-payment (official Nimiq Provider API reference).
   INVALID_TRANSACTION: 'INVALID_TRANSACTION',
@@ -126,7 +182,11 @@ export function isTerminalPaymentState(state: PaymentState): boolean {
     // Terminal for this purchase: the backend has finished deciding, and what
     // happens next is a human compensation case, not another request.
     state.kind === 'COMPENSATION_REQUIRED' ||
-    state.kind === 'PURCHASE_CUTOFF'
+    state.kind === 'PURCHASE_CUTOFF' ||
+    // Nothing is in flight and nothing will be. Retrying is refused again.
+    state.kind === 'SELF_PURCHASE' ||
+    state.kind === 'ALREADY_OWNED' ||
+    state.kind === 'PURCHASE_IN_SETTLEMENT'
   )
 }
 
@@ -251,8 +311,9 @@ export function paymentStateFromPurchase(purchase: Purchase): PaymentState {
       }
     case 'verifying':
       return { kind: 'VERIFYING', purchase }
-    // Seen on-chain, waiting for the macro block that makes it final. Real
-    // progress, and emphatically not a failure.
+    // On chain and fully validated, but this deployment settles on finality,
+    // so the pass waits for the macro block. Real progress, emphatically not a
+    // failure, and not reachable at all under the `inclusion` policy.
     case 'awaiting_finality':
       return { kind: 'PENDING', purchase }
     // The backend could not determine an outcome — RPC trouble, or a hash it
@@ -267,8 +328,8 @@ export function paymentStateFromPurchase(purchase: Purchase): PaymentState {
     case 'completed':
       // `completed` is only reached with a pass; if one is somehow absent, say
       // "preparing your pass" rather than linking to nothing (docs/05 §54).
-      return purchase.passId
-        ? { kind: 'COMPLETE', purchase, passId: purchase.passId }
+      return purchase.purchasedPassId
+        ? { kind: 'COMPLETE', purchase, passId: purchase.purchasedPassId }
         : { kind: 'PASS_CREATING', purchase }
     // Verified payment, no pass. Deliberately NOT folded into FAILED: the money
     // arrived and the backend knows it, so telling this customer their payment

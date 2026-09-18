@@ -1,27 +1,21 @@
-import type {
-  RedemptionChallenge,
-  RedemptionConfirmation,
-  RedemptionHistoryItem,
-  RedemptionLookup,
-} from '@/types/domain'
+import type { RedemptionChallenge, RedemptionHistoryItem } from '@/types/domain'
+import type { SigningScheme } from '@/types/auth'
 
 import { apiRequest } from './client'
 
 /**
- * Session redemption (`backend/openapi.yaml`, Mission 04.1).
+ * Session redemption (`backend/openapi.yaml`).
  *
- * The shape of this module is the security model in miniature. The customer
- * asks for a challenge, signs the server's exact message, and receives a
- * short-lived reference. The provider looks that reference up — which consumes
- * nothing — and then, separately and explicitly, confirms. Only that last call
- * moves a counter, and it moves it inside one database transaction.
+ * Two calls, and the security model is in the shape of them. The owner asks for
+ * a challenge, then signs the server's exact message; that signature both
+ * authorises and spends one session, in one backend transaction. There is no
+ * bearer reference in between and no second party, because a pass is used by
+ * the person who owns it (docs/01-PRODUCT.md §24-§25).
  *
- * There is deliberately no endpoint that lets either side assert an outcome,
- * and nothing here composes a signing message, mints a reference, or decrements
- * a session (docs/08-ARCHITECTURE.md §49-§50, docs/09-SECURITY.md §48-§56).
+ * Nothing here composes a signing message or decrements a session. A session is
+ * used when the backend says it was, and the new counts come from its response
+ * (docs/08-ARCHITECTURE.md §49-§50, docs/09-SECURITY.md §48-§56).
  */
-
-/* -- Customer ------------------------------------------------------------ */
 
 /**
  * POST /passes/{passID}/redemption-challenges → 200 `RedemptionChallenge`
@@ -30,17 +24,11 @@ import { apiRequest } from './client'
  * customer. No request body: everything is derived server-side from the
  * authenticated session and the pass.
  *
- * It has two other jobs, both load-bearing:
+ * Called while a challenge already exists, it returns that same one: one active
+ * challenge per pass is a database constraint, not a convention. So this is
+ * safe to call on entering the flow and again after a reload.
  *
- *  - Called while a `CREATED` challenge already exists, it returns that one.
- *    One active challenge per pass is a database constraint, not a convention.
- *  - Called while an `AUTHORIZED` challenge exists, it **rotates** the NR1
- *    reference and returns the fresh one, invalidating the previous. This is
- *    the only documented way to recover a reference after a reload, since
- *    reading a challenge back never includes one — and it needs no second
- *    signature, because the challenge is already authorised.
- *
- * Creating or rotating never consumes a session.
+ * Creating a challenge never consumes a session.
  */
 export function createRedemptionChallenge(
   passId: string,
@@ -55,11 +43,8 @@ export function createRedemptionChallenge(
 /**
  * GET /passes/{passID}/redemption-challenges/current → 200 `RedemptionChallenge`
  *
- * The current challenge's state, **without** the bearer reference. Use it to
- * find out where a redemption stands after a reload; use the POST above when a
- * usable reference is actually needed.
- *
- * 404 simply means no active challenge — a normal answer, not an error.
+ * Where a redemption stands after a reload. 404 simply means no active
+ * challenge — a normal answer, not an error.
  */
 export function getCurrentRedemptionChallenge(
   passId: string,
@@ -71,7 +56,7 @@ export function getCurrentRedemptionChallenge(
   )
 }
 
-/** GET /redemption-challenges/{challengeID} → 200. Also without the reference. */
+/** GET /redemption-challenges/{challengeID} → 200. One challenge's state. */
 export function getRedemptionChallenge(
   challengeId: string,
   options: { signal?: AbortSignal } = {},
@@ -88,16 +73,17 @@ export function getRedemptionChallenge(
  * Body is `RedemptionAuthorization`: `{ publicKey, signature }`, exactly the
  * two values Nimiq Pay's `sign()` returned, forwarded unchanged.
  *
- * This is the one call that makes a reference usable, and the response is the
- * only place besides a rotation where `redemptionReference` appears. It creates
- * no session effect: authorising is not redeeming.
+ * This is the redemption. On success the backend has verified the signature and
+ * consumed exactly one session in the same transaction, and the response
+ * carries the resulting `pass` counts and the `redemption` that was recorded.
  *
- * Not idempotent. Re-posting against an already-authorised challenge is a 409 —
- * to recover a reference, rotate through `createRedemptionChallenge`.
+ * Not idempotent, and deliberately so: a replayed authorization is refused
+ * rather than silently spending a second session. A double-tapped button
+ * therefore costs nothing.
  */
 export function authorizeRedemption(
   challengeId: string,
-  input: { publicKey: string; signature: string },
+  input: { publicKey: string; signature: string; signingScheme?: SigningScheme | null },
   options: { signal?: AbortSignal } = {},
 ): Promise<RedemptionChallenge> {
   return apiRequest<RedemptionChallenge>(
@@ -106,7 +92,15 @@ export function authorizeRedemption(
       method: 'POST',
       // Forwarded byte-for-byte. Re-encoding, padding or case-folding either
       // value would sign different bytes than the wallet did.
-      body: { publicKey: input.publicKey, signature: input.signature },
+      //
+      // `signingScheme` says which documented preprocessing produced them, and
+      // is sent only by a transport that documents one — the Nimiq Hub. Omitted,
+      // the backend verifies under its configured default, exactly as before.
+      body: {
+        publicKey: input.publicKey,
+        signature: input.signature,
+        ...(input.signingScheme ? { signingScheme: input.signingScheme } : {}),
+      },
       signal: options.signal,
     },
   )
@@ -125,56 +119,12 @@ export function listPassRedemptions(
 
 /* -- Provider ------------------------------------------------------------ */
 
-/**
- * POST /providers/{providerID}/redemptions/lookup → 200 `RedemptionLookup`
- *
- * **Non-consuming.** It validates the reference, expiry, authorisation, pass
- * binding, provider ownership and stale context, and returns just enough
- * context for a human to confirm deliberately. It creates no redemption and
- * moves no counter.
- *
- * A successful lookup is not a successful redemption, and the UI must never
- * present it as one (§18 of this milestone).
+/*
+ * The provider has no write path into a redemption. There used to be a lookup
+ * and a confirm here, and the confirm was where a session was actually spent;
+ * both are gone from the contract. What remains is history: whose service was
+ * consumed is still a fact the provider can read.
  */
-export function lookupRedemption(
-  providerId: string,
-  input: { redemptionReference: string },
-  options: { signal?: AbortSignal } = {},
-): Promise<RedemptionLookup> {
-  return apiRequest<RedemptionLookup>(
-    `/api/v1/providers/${encodeURIComponent(providerId)}/redemptions/lookup`,
-    {
-      method: 'POST',
-      body: { redemptionReference: input.redemptionReference },
-      signal: options.signal,
-    },
-  )
-}
-
-/**
- * POST /providers/{providerID}/redemptions/confirm → 200 `RedemptionConfirmationResult`
- *
- * The authoritative consumption. One session, one atomic transaction, one
- * redemption row — and the response carries the resulting counters, which is
- * where the new balance comes from. Never from arithmetic here.
- *
- * Replaying a consumed reference is a 409; the reference is single-use and the
- * backend enforces that, not this client.
- */
-export function confirmRedemption(
-  providerId: string,
-  input: { redemptionReference: string },
-  options: { signal?: AbortSignal } = {},
-): Promise<RedemptionConfirmation> {
-  return apiRequest<RedemptionConfirmation>(
-    `/api/v1/providers/${encodeURIComponent(providerId)}/redemptions/confirm`,
-    {
-      method: 'POST',
-      body: { redemptionReference: input.redemptionReference },
-      signal: options.signal,
-    },
-  )
-}
 
 /** GET /providers/{providerID}/redemptions → `{ items }`. Owned-provider history. */
 export function listProviderRedemptions(
@@ -185,26 +135,4 @@ export function listProviderRedemptions(
     `/api/v1/providers/${encodeURIComponent(providerId)}/redemptions`,
     { signal: options.signal },
   )
-}
-
-/* -- Reference shape -----------------------------------------------------
- *
- * `NR1:` + 64 lowercase hex, as the contract's pattern says.
- *
- * This is presentation and paste-hygiene only. A reference that passes here is
- * not valid — validity is expiry, authorisation, ownership and single use, none
- * of which are visible in the string. It saves a round trip on an obvious typo
- * and nothing more (§37).
- * -------------------------------------------------------------------- */
-
-export const REDEMPTION_REFERENCE_PATTERN = /^NR1:[0-9a-f]{64}$/
-
-/** Trims and lowercases a pasted reference. Never repairs a malformed one. */
-export function normaliseRedemptionReference(input: string): string {
-  const trimmed = input.trim()
-  return trimmed.startsWith('NR1:') ? `NR1:${trimmed.slice(4).toLowerCase()}` : trimmed
-}
-
-export function looksLikeRedemptionReference(input: string): boolean {
-  return REDEMPTION_REFERENCE_PATTERN.test(normaliseRedemptionReference(input))
 }

@@ -64,7 +64,7 @@ describe('native approval serialisation', () => {
     const accounts = listAccounts()
     await Promise.resolve()
 
-    // Meanwhile the customer presses Buy on the package page.
+    // Meanwhile the customer presses Buy on the pass page.
     await expect(
       sendBasicTransactionWithData({ recipient: 'NQ07', value: 1, data: 'NP:x' }),
     ).rejects.toMatchObject({ kind: 'WALLET_BUSY' })

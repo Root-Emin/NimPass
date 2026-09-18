@@ -388,7 +388,7 @@ Nimpass is particularly well suited to the competition because Nimiq functionali
 Conceptually:
 
 ```text
-Package
+Pass
    ↓
 NIM Payment
    ↓
@@ -462,7 +462,7 @@ Especially:
 ```text
 Open Nimpass
 
-View Package
+View Pass
 
 Connect / Access Wallet Context
 
@@ -572,7 +572,7 @@ Open Nimpass
     ↓
 Understand Product
     ↓
-View Package
+View Pass
     ↓
 Purchase with NIM
     ↓
@@ -702,18 +702,18 @@ The eventual Nimpass submission should communicate roughly:
 Problem
 
 Independent service providers sell multi-session
-packages but often track remaining sessions manually.
+Passes but often track remaining sessions manually.
 
 
 Solution
 
-Nimpass turns a prepaid service package into a
+Nimpass turns a prepaid service Pass into a
 persistent digital session pass.
 
 
 Nimiq
 
-Customers purchase packages in NIM through
+Customers purchase Passes in NIM through
 Nimiq Pay, receive their pass, and use wallet-linked
 functionality throughout the pass lifecycle.
 
@@ -738,7 +738,7 @@ It can strengthen the story of the application.
 A Nimpass demo should eventually demonstrate:
 
 ```text
-Provider Package
+Provider Pass
 
 ↓
 
@@ -914,9 +914,9 @@ For Nimpass this means the core lifecycle must genuinely function.
 At minimum:
 
 ```text
-Provider creates package
+Provider creates Pass
 
-Customer views package
+Customer views Pass
 
 Customer pays
 
@@ -1047,7 +1047,7 @@ The application should solve an actual user problem.
 
 Nimpass's problem statement is:
 
-> Service providers selling prepaid multi-session services need a reliable way to sell packages, track usage, and share a trusted remaining-session state with customers.
+> Service providers selling prepaid multi-session services need a reliable way to sell Passes, track usage, and share a trusted remaining-session state with customers.
 
 This is the problem.
 
@@ -1083,7 +1083,7 @@ Primary customers:
 
 ```text
 People purchasing prepaid
-multi-session service packages
+multi-session service Passes
 ```
 
 ---
@@ -1110,7 +1110,7 @@ crypto booking
 The differentiating lifecycle is:
 
 ```text
-Prepaid package
+Prepaid Pass
 +
 persistent pass
 +
@@ -1394,7 +1394,7 @@ What is Nimpass?
 
 Who sells the service?
 
-What package is available?
+What Pass is available?
 
 How many sessions?
 
@@ -1923,11 +1923,11 @@ Promotion
 The most important competition demo path is:
 
 ```text
-Provider creates package
+Provider creates Pass
         ↓
-Package becomes available
+Pass becomes available
         ↓
-Customer opens package
+Customer opens Pass
         ↓
 Customer understands offer
         ↓
@@ -1999,7 +1999,7 @@ Before Nimpass is considered competition-ready, a completely new tester should b
 
 2. Understand what Nimpass does.
 
-3. Find a service package.
+3. Find a service Pass.
 
 4. Understand the provider.
 
@@ -2446,7 +2446,7 @@ music teachers
 wellness professionals
 ```
 
-to sell prepaid multi-session packages.
+to sell prepaid multi-session Passes.
 
 Customers purchase with NIM and receive a persistent digital pass showing exactly how many sessions remain.
 

@@ -146,12 +146,12 @@ func (c apiClient) call(method, path string, body any, idempotency string) (map[
 }
 
 func runIntent(client apiClient) error {
-	packageID := required("NIMPASS_PACKAGE_ID")
+	passID := required("NIMPASS_PASS_ID")
 	key := os.Getenv("NIMPASS_IDEMPOTENCY_KEY")
 	if key == "" {
 		key = "live-testnet-" + time.Now().UTC().Format("20060102T150405.000000000Z")
 	}
-	result, err := client.call(http.MethodPost, "/api/v1/purchases", map[string]string{"packageId": packageID}, key)
+	result, err := client.call(http.MethodPost, "/api/v1/purchases", map[string]string{"passId": passID}, key)
 	if err != nil {
 		return err
 	}
@@ -171,8 +171,8 @@ func runSubmit(client apiClient, pollCount int, pollInterval time.Duration) erro
 			return err
 		}
 		status, _ := result["status"].(string)
-		printJSON(map[string]any{"attempt": attempt, "status": status, "passId": result["passId"], "paymentVerification": result["paymentVerification"], "compensation": result["compensation"]})
-		if result["passId"] != nil && result["passId"] != "" {
+		printJSON(map[string]any{"attempt": attempt, "status": status, "passId": result["passId"], "purchasedPassId": result["purchasedPassId"], "paymentVerification": result["paymentVerification"], "compensation": result["compensation"]})
+		if result["purchasedPassId"] != nil && result["purchasedPassId"] != "" {
 			return nil
 		}
 		if status == "compensation_required" || status == "permanently_failed" {
@@ -186,7 +186,7 @@ func runSubmit(client apiClient, pollCount int, pollInterval time.Duration) erro
 }
 
 func runChallenge(client apiClient) error {
-	passID := required("NIMPASS_PASS_ID")
+	passID := required("NIMPASS_PURCHASED_PASS_ID")
 	result, err := client.call(http.MethodPost, "/api/v1/passes/"+url.PathEscape(passID)+"/redemption-challenges", nil, "")
 	if err != nil {
 		return err

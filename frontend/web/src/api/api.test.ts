@@ -31,7 +31,7 @@ describe('apiRequest', () => {
     // implemented API does not use; the contract wins.
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ id: 'pkg_1', title: 'Ten sessions' })))
 
-    await expect(apiRequest<{ id: string }>('/api/v1/public/packages/pkg_1')).resolves.toEqual({
+    await expect(apiRequest<{ id: string }>('/api/v1/public/passes/pkg_1')).resolves.toEqual({
       id: 'pkg_1',
       title: 'Ten sessions',
     })
@@ -62,7 +62,7 @@ describe('apiRequest', () => {
       }),
     )
 
-    const error = await captureError(apiRequest('/api/v1/public/packages'))
+    const error = await captureError(apiRequest('/api/v1/public/passes'))
 
     expect(error).toBeInstanceOf(ApiError)
     expect(error.isNetworkError).toBe(true)
@@ -76,7 +76,7 @@ describe('apiRequest', () => {
       vi.fn(async () => new Response('<html>gateway error</html>', { status: 200 })),
     )
 
-    const error = await captureError(apiRequest('/api/v1/public/packages'))
+    const error = await captureError(apiRequest('/api/v1/public/passes'))
     expect(error.code).toBe('MALFORMED_RESPONSE')
   })
 
@@ -86,13 +86,26 @@ describe('apiRequest', () => {
 
     await apiRequest('/api/v1/purchases', {
       method: 'POST',
-      body: { packageId: 'pkg_1' },
+      body: { passId: 'pkg_1' },
       idempotencyKey: 'key-123',
     })
 
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect((init.headers as Record<string, string>)['Idempotency-Key']).toBe('key-123')
     expect(init.method).toBe('POST')
+  })
+
+  it('does not set JSON content-type on a multipart upload', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ id: 'media_1' }, 201))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const body = new FormData()
+    body.append('file', new File(['jpeg'], 'cover.jpg', { type: 'image/jpeg' }))
+    await apiRequest('/api/v1/media', { method: 'POST', body })
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(init.body).toBeInstanceOf(FormData)
+    expect((init.headers as Record<string, string>)['Content-Type']).toBeUndefined()
   })
 
   it('keeps an aborted request out of the error reporting path', () => {

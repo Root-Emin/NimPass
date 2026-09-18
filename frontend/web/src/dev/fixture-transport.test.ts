@@ -10,13 +10,13 @@ import { serveFromFixtures } from './fixture-transport'
  */
 describe('fixture transport scope', () => {
   it('serves the three public routes the contract defines', async () => {
-    const packages = await serveFromFixtures('/api/v1/public/packages', 'GET')
-    expect(packages.handled).toBe(true)
-    const items = (packages.data as { items: { package: { id: string } }[] }).items
+    const catalog = await serveFromFixtures('/api/v1/public/passes', 'GET')
+    expect(catalog.handled).toBe(true)
+    const items = (catalog.data as { items: { pass: { id: string } }[] }).items
     expect(items.length).toBeGreaterThan(0)
 
     const offer = await serveFromFixtures(
-      `/api/v1/public/packages/${items[0]!.package.id}`,
+      `/api/v1/public/passes/${items[0]!.pass.id}`,
       'GET',
     )
     expect(offer.handled).toBe(true)
@@ -26,7 +26,7 @@ describe('fixture transport scope', () => {
     ['GET', '/api/v1/passes/40000000-0000-4000-8000-000000000001'],
     ['GET', '/api/v1/purchases'],
     ['GET', '/api/v1/purchases/aaaaaaaa-0000-4000-8000-000000000001'],
-    ['GET', '/api/v1/providers/00000000-0000-4000-8000-000000000002/packages'],
+    ['GET', '/api/v1/providers/00000000-0000-4000-8000-000000000002/passes'],
   ])('refuses %s %s rather than inventing a result', async (method, route) => {
     await expect(serveFromFixtures(route, method)).rejects.toBeInstanceOf(ApiError)
   })
@@ -36,7 +36,7 @@ describe('fixture transport scope', () => {
     ['POST', '/api/v1/purchases/aaaaaaaa-0000-4000-8000-000000000001/reconcile'],
     ['POST', '/api/v1/passes/40000000-0000-4000-8000-000000000001/redemption-challenges'],
     ['POST', '/api/v1/redemptions/red_1/complete'],
-    ['POST', '/api/v1/providers/00000000-0000-4000-8000-000000000002/services/svc/packages'],
+    ['POST', '/api/v1/providers/00000000-0000-4000-8000-000000000002/services/svc/passes'],
     ['PATCH', '/api/v1/providers'],
   ])('never fakes a successful %s %s', async (method, route) => {
     await expect(serveFromFixtures(route, method)).rejects.toThrow(
@@ -45,21 +45,21 @@ describe('fixture transport scope', () => {
   })
 
   it('serves the whole published catalogue, because the contract has no filters', async () => {
-    // `GET /public/packages` takes no query parameters. Fixtures must not
+    // `GET /public/passes` takes no query parameters. Fixtures must not
     // pretend otherwise, or Discover would be designed against a search the
     // backend never performs.
-    const all = await serveFromFixtures('/api/v1/public/packages', 'GET')
+    const all = await serveFromFixtures('/api/v1/public/passes', 'GET')
     const filtered = await serveFromFixtures(
-      '/api/v1/public/packages?search=guitar&category=Music',
+      '/api/v1/public/passes?search=guitar&category=Music',
       'GET',
     )
     expect(filtered.data).toEqual(all.data)
   })
 
-  it('reports an unknown package as a domain 404, not a network failure', async () => {
+  it('reports an unknown pass as a domain 404, not a network failure', async () => {
     let error: ApiError | null = null
     try {
-      await serveFromFixtures('/api/v1/public/packages/00000000-0000-4000-8000-0000000000ff', 'GET')
+      await serveFromFixtures('/api/v1/public/passes/00000000-0000-4000-8000-0000000000ff', 'GET')
     } catch (caught) {
       error = caught as ApiError
     }
@@ -68,8 +68,8 @@ describe('fixture transport scope', () => {
   })
 
   it('prices fixtures in integer Luna', async () => {
-    const result = await serveFromFixtures('/api/v1/public/packages', 'GET')
-    const items = (result.data as { items: { package: { priceLuna: number } }[] }).items
-    expect(items.every((item) => Number.isInteger(item.package.priceLuna))).toBe(true)
+    const result = await serveFromFixtures('/api/v1/public/passes', 'GET')
+    const items = (result.data as { items: { pass: { priceLuna: number } }[] }).items
+    expect(items.every((item) => Number.isInteger(item.pass.priceLuna))).toBe(true)
   })
 })

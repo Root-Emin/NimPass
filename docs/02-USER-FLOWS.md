@@ -5,7 +5,7 @@
 > **Status:** Active
 > **Audience:** Developers, AI coding agents, designers, product contributors
 > **Depends on:** `01-PRODUCT.md`
-> **Primary purpose:** Define how customers and service providers move through Nimpass across the web-first product experience, including discovery, package purchase, Nimiq Pay payment, pass ownership, session redemption, repeat usage, success states, failure states, recovery paths, and critical edge cases.
+> **Primary purpose:** Define how customers and service providers move through Nimpass across the web-first product experience, including discovery, Pass purchase, Nimiq Pay payment, pass ownership, session redemption, repeat usage, success states, failure states, recovery paths, and critical edge cases.
 
 ---
 
@@ -27,7 +27,7 @@ Nimpass has two primary actors:
 CUSTOMER
 
 discovers providers and services
-buys multi-session packages
+buys multi-session Passes
 owns digital passes
 tracks remaining sessions
 redeems sessions over time
@@ -39,8 +39,8 @@ PROVIDER
 
 creates a public provider presence
 creates services
-creates multi-session packages
-publishes and shares packages
+creates multi-session Passes
+publishes and shares Passes
 receives customers
 validates session usage
 tracks active passes
@@ -50,13 +50,13 @@ continues the customer relationship
 The central lifecycle is:
 
 ```text
-Provider creates package
+Provider creates Pass
         ↓
-Package becomes publicly accessible
+Pass becomes publicly accessible
         ↓
-Customer discovers or receives package link
+Customer discovers or receives Pass link
         ↓
-Customer reviews package
+Customer reviews Pass
         ↓
 Customer purchases with NIM
         ↓
@@ -82,7 +82,7 @@ Pass reaches zero
         ↓
 Pass becomes completed
         ↓
-Customer may buy the current package again
+Customer may buy the current Pass again
 ```
 
 Every important user flow should strengthen this lifecycle.
@@ -106,7 +106,7 @@ NIMPASS WEB
 
 Public discovery
 Provider profiles
-Package pages
+Pass pages
 Customer passes
 Provider management
 Purchase flow
@@ -164,8 +164,8 @@ Especially:
 
 ```text
 open provider
-open package
-understand package
+open Pass
+understand Pass
 pay with NIM
 view pass
 see remaining sessions
@@ -189,8 +189,8 @@ Nimpass has three important experience surfaces.
 
    discovery
    provider profiles
-   package pages
-   shared package links
+   Pass pages
+   shared Pass links
 
 
 2. CUSTOMER EXPERIENCE
@@ -207,7 +207,7 @@ Nimpass has three important experience surfaces.
 
    provider profile
    services
-   packages
+   Passes
    active passes
    redemption validation
    operational history
@@ -230,7 +230,7 @@ Browse
       ↓
 Open provider
       ↓
-Open package
+Open Pass
       ↓
 Understand offer
       ↓
@@ -257,22 +257,22 @@ Wallet interaction must happen when it serves a real product action.
 
 Nimpass is URL-driven.
 
-Public providers and packages should be directly addressable wherever possible.
+Public providers and Passes should be directly addressable wherever possible.
 
 Example:
 
 ```text
-Provider shares package link
+Provider shares Pass link
         ↓
 Customer clicks link
         ↓
-Nimpass opens directly on that package
+Nimpass opens directly on that Pass
 ```
 
 Do not force:
 
 ```text
-Package link
+Pass link
     ↓
 Homepage
     ↓
@@ -282,7 +282,7 @@ Discovery
     ↓
 Search
     ↓
-Package again
+Pass again
 ```
 
 The destination encoded in a valid link should be respected.
@@ -296,9 +296,9 @@ Users should not complete unnecessary account setup merely to understand the pro
 A preferred customer purchase journey is:
 
 ```text
-Open package
+Open Pass
       ↓
-Understand package
+Understand Pass
       ↓
 Buy Pass
       ↓
@@ -333,7 +333,7 @@ Nimiq functionality should feel like a natural part of purchasing and owning a p
 Conceptually:
 
 ```text
-Package
+Pass
    ↓
 Buy Pass
    ↓
@@ -437,7 +437,7 @@ Important surfaces should normally make the next action obvious.
 Examples:
 
 ```text
-Package
+Pass
 
 [ Buy Pass ]
 ```
@@ -455,9 +455,9 @@ Completed Pass
 ```
 
 ```text
-Provider package
+Provider Pass
 
-[ Share Package ]
+[ Share Pass ]
 ```
 
 ```text
@@ -545,18 +545,18 @@ The two primary contexts are:
 │                             │
 │ Creates public presence     │
 │ Creates services            │
-│ Creates packages            │
+│ Creates Passes            │
 │ Receives NIM purchases      │
 │ Validates sessions          │
 └──────────────┬──────────────┘
                │
-               │ package / pass
+               │ Pass / pass
                ▼
 ┌─────────────────────────────┐
 │          CUSTOMER           │
 │                             │
 │ Discovers provider          │
-│ Purchases package           │
+│ Purchases Pass           │
 │ Owns pass                   │
 │ Uses sessions over time     │
 └─────────────────────────────┘
@@ -567,13 +567,13 @@ One person may participate in both roles.
 Example:
 
 ```text
-Alex sells personal-training packages
+Alex sells personal-training Passes
 ```
 
 and also:
 
 ```text
-Alex buys a language-learning package
+Alex buys a language-learning Pass
 ```
 
 In the second flow, Alex is acting as a customer.
@@ -597,9 +597,9 @@ Discover
      ↓
 Provider / Service
      ↓
-Package
+Pass
      ↓
-Package Detail
+Pass Detail
      ↓
 Buy Pass
 ```
@@ -615,9 +615,9 @@ ENTRY
   ↓
 Discover or Open Direct Link
   ↓
-Provider / Package
+Provider / Pass
   ↓
-Package Detail
+Pass Detail
   ↓
 Buy Pass
   ↓
@@ -661,7 +661,7 @@ Create / Complete Provider Profile
   ↓
 Create Service
   ↓
-Create Package
+Create Pass
   ↓
 Preview
   ↓
@@ -703,15 +703,15 @@ Search result
 
 Provider profile
 
-Package detail page
+Pass detail page
 
-Direct package link
+Direct Pass link
 
 Direct provider link
 
 Shared social/message link
 
-Package QR
+Pass QR
 
 Existing pass
 
@@ -749,7 +749,7 @@ Understand proposition
  ↓
 Browse services/providers
  ↓
-Open interesting provider/package
+Open interesting provider/Pass
 ```
 
 The homepage should not become a blockchain landing page dominated by technical terminology.
@@ -758,7 +758,7 @@ The homepage should not become a blockchain landing page dominated by technical 
 
 # 20. Discovery Flow
 
-Discovery exists to help users reach useful providers and packages.
+Discovery exists to help users reach useful providers and Passes.
 
 Conceptually:
 
@@ -769,7 +769,7 @@ Browse providers / services
    ↓
 Select result
    ↓
-Provider or package
+Provider or Pass
 ```
 
 Discovery is useful, but it must not become the product itself.
@@ -795,7 +795,7 @@ Where search is supported:
 ```text
 User searches
       ↓
-Relevant provider/service/package results
+Relevant provider/service/Pass results
       ↓
 User selects result
       ↓
@@ -860,16 +860,16 @@ central to the experience.
 
 ---
 
-# 23. Provider Profile → Package Flow
+# 23. Provider Profile → Pass Flow
 
 ```text
 Provider Profile
        ↓
-Available Packages
+Available Passes
        ↓
-Select Package
+Select Pass
        ↓
-Package Detail
+Pass Detail
 ```
 
 The transition should feel lightweight.
@@ -878,9 +878,9 @@ A customer should not need to open several unrelated pages before seeing the act
 
 ---
 
-# 24. Package Detail
+# 24. Pass Detail
 
-The package page is one of Nimpass's most important conversion surfaces.
+The Pass page is one of Nimpass's most important conversion surfaces.
 
 The user should immediately understand:
 
@@ -893,7 +893,7 @@ SESSION COUNT
 
 PRICE IN NIM
 
-WHAT THE PACKAGE INCLUDES
+WHAT THE PASS INCLUDES
 
 WHAT HAPPENS AFTER PURCHASE
 ```
@@ -911,7 +911,7 @@ Alex Fitness
 
 250 NIM
 
-After purchase, this package becomes
+After purchase, this Pass becomes
 a digital Nimpass linked to your wallet.
 
 [ Buy Pass ]
@@ -931,7 +931,7 @@ where supported.
 
 ---
 
-# 25. Package Availability States
+# 25. Pass Availability States
 
 ## Available
 
@@ -958,17 +958,17 @@ The purchase CTA must not appear usable.
 ## No longer offered
 
 ```text
-This package is no longer available
+This Pass is no longer available
 for new purchases.
 ```
 
-Previously purchased passes remain separate objects and must not disappear merely because the current package is unavailable.
+Previously purchased passes remain separate objects and must not disappear merely because the current Pass is unavailable.
 
 ---
 
-# 26. Package Sharing
+# 26. Pass Sharing
 
-Public packages should be shareable.
+Public Passes should be shareable.
 
 Provider actions may include:
 
@@ -977,15 +977,15 @@ Copy Link
 
 Share
 
-Show Package QR
+Show Pass QR
 ```
 
-The canonical shared destination is the package itself.
+The canonical shared destination is the Pass itself.
 
 ```text
-Shared Package URL
+Shared Pass URL
         ↓
-Package Detail
+Pass Detail
 ```
 
 Do not redirect to the homepage unnecessarily.
@@ -1005,7 +1005,7 @@ Nimpass begins a purchase flow.
 Conceptually:
 
 ```text
-Package Detail
+Pass Detail
       ↓
 Purchase Intent Created
       ↓
@@ -1018,7 +1018,7 @@ Immediately before wallet approval, the customer should know:
 
 ```text
 provider
-package
+Pass
 session count
 price
 currency
@@ -1035,7 +1035,7 @@ Preferred:
 ```text
 Browse publicly
        ↓
-Choose package
+Choose Pass
        ↓
 Buy Pass
        ↓
@@ -1141,7 +1141,7 @@ No completed purchase was created.
 
 [ Try Again ]
 
-[ Back to Package ]
+[ Back to Pass ]
 ```
 
 Do not use alarming failure language for an intentional cancellation.
@@ -1309,6 +1309,10 @@ One intended purchase must not accidentally create multiple valid purchases.
 
 Idempotency is a product requirement.
 
+Separately from idempotency, a customer may hold only one live pass per Pass.
+A second purchase of a Pass they are still using is refused outright; see
+`01-PRODUCT.md §56` and `DECISIONS.md` ADR-026.
+
 ---
 
 # 39. Purchase Recovery After Closing the Browser
@@ -1440,7 +1444,7 @@ Example:
 ```text
 No passes yet.
 
-Packages you purchase will appear here.
+Passes you purchase will appear here.
 
 [ Discover Services ]
 ```
@@ -1600,6 +1604,13 @@ session already consumed
 
 ---
 
+> **Sections 49-54 are superseded by `DECISIONS.md` ADR-007.** The provider
+> takes no part in a redemption: there is no scanner, no code entry, no
+> confirmation screen and no provider-side consumption endpoint. A session is
+> spent by the pass owner, signing the backend's challenge with their own
+> wallet, and the counts update for both sides. The flows below describe the
+> removed model and are kept for the record.
+
 # 49. Provider Redemption Entry
 
 The provider must have a quickly reachable validation action.
@@ -1613,7 +1624,7 @@ Provider Workspace
 
 Active Passes
 
-Packages
+Passes
 
 Recent Activity
 ```
@@ -2012,7 +2023,7 @@ History should represent authoritative state changes.
 A provider may see relevant events such as:
 
 ```text
-package purchase
+Pass purchase
 session redeemed
 pass completed
 ```
@@ -2096,12 +2107,16 @@ Completed Pass
       ↓
 Buy Again
       ↓
-Current Package
+Current Pass
       ↓
 Review Current Terms
       ↓
 Purchase
 ```
+
+Buy Again is offered from a **finished** pass. While the customer still has
+sessions on this Pass there is nothing to repurchase, and a second purchase of
+it is refused (`01-PRODUCT.md §56`, `DECISIONS.md` ADR-026).
 
 Nimpass must not silently repurchase using historical terms.
 
@@ -2119,9 +2134,9 @@ the customer sees the current offer before paying.
 
 ---
 
-# 71. Existing Passes and Package Changes
+# 71. Existing Passes and Pass Changes
 
-A package is the current offer.
+A Pass is the current offer.
 
 A pass is the historical purchased entitlement.
 
@@ -2136,7 +2151,7 @@ Customer bought:
 250 NIM
 ```
 
-Later the provider changes the package to:
+Later the provider changes the Pass to:
 
 ```text
 8 sessions
@@ -2149,16 +2164,16 @@ The customer's existing pass remains:
 10 original sessions
 ```
 
-New customers purchase the updated package.
+New customers purchase the updated Pass.
 
 ---
 
-# 72. Provider Disables a Package
+# 72. Provider Disables a Pass
 
 Flow:
 
 ```text
-Provider disables package
+Provider disables Pass
         ↓
 New purchases blocked
 ```
@@ -2168,7 +2183,7 @@ Existing legitimate passes do not automatically disappear.
 Do not confuse:
 
 ```text
-PACKAGE AVAILABILITY
+SALE AVAILABILITY
 ```
 
 with:
@@ -2181,7 +2196,7 @@ PASS VALIDITY
 
 # 73. Provider First-Time Setup
 
-A new provider should reach a sellable package quickly.
+A new provider should reach a sellable Pass quickly.
 
 Preferred:
 
@@ -2192,7 +2207,7 @@ Create Provider Profile
        ↓
 Create Service
        ↓
-Create Package
+Create Pass
        ↓
 Preview
        ↓
@@ -2201,7 +2216,7 @@ Publish
 Share
 ```
 
-Avoid requiring a massive business-management setup before the first package can be published.
+Avoid requiring a massive business-management setup before the first Pass can be published.
 
 ---
 
@@ -2253,24 +2268,24 @@ Services
 Create Service
 ```
 
-Creating a service does not automatically create a purchasable package.
+Creating a service does not automatically create a purchasable Pass.
 
 ---
 
-# 76. Create Package
+# 76. Create Pass
 
 From a service:
 
 ```text
 Personal Training
        ↓
-Create Package
+Create Pass
 ```
 
-Core package fields include:
+Core Pass fields include:
 
 ```text
-package title
+Pass title
 number of sessions
 price in NIM
 description
@@ -2294,7 +2309,7 @@ Ten private personal-training sessions.
 
 ---
 
-# 77. Package Validation
+# 77. Pass Validation
 
 Invalid examples:
 
@@ -2326,12 +2341,12 @@ VALIDATION_ERROR_FIELD_003
 
 ---
 
-# 78. Package Preview
+# 78. Pass Preview
 
 Before publication:
 
 ```text
-Package Editor
+Pass Editor
       ↓
 Preview
       ↓
@@ -2342,28 +2357,28 @@ Preview should resemble the customer-facing offer closely enough that the provid
 
 ---
 
-# 79. Publish Package
+# 79. Publish Pass
 
 Successful publication:
 
 ```text
-Package published
+Pass published
 
-Your 10-session Personal Training package
+Your 10-session Personal Training Pass
 is ready.
 
-[ View Package ]
+[ View Pass ]
 
-[ Share Package ]
+[ Share Pass ]
 ```
 
-The resulting package has a stable public destination where supported.
+The resulting Pass has a stable public destination where supported.
 
 ---
 
-# 80. Provider Packages
+# 80. Provider Passes
 
-Provider package management may distinguish:
+Provider Pass management may distinguish:
 
 ```text
 ACTIVE
@@ -2398,7 +2413,7 @@ Active Passes
 
 Personal Training
 
-10-session package
+10-session Pass
 
 Customer
 7 remaining
@@ -2440,7 +2455,7 @@ Provider Overview
 Active Passes
 18
 
-Published Packages
+Published Passes
 3
 
 Recent Activity
@@ -2467,7 +2482,7 @@ Provider workflows often involve:
 ```text
 editing
 forms
-package management
+Pass management
 pass lists
 history
 multiple pieces of information
@@ -2481,7 +2496,7 @@ Examples include:
 side navigation
 split layouts
 tables where appropriate
-multi-column package editors
+multi-column Pass editors
 larger previews
 dashboard cards
 ```
@@ -2502,7 +2517,7 @@ Critical operational actions such as:
 scan session
 confirm redemption
 view pass status
-view package
+view Pass
 ```
 
 should remain responsive where practical.
@@ -2526,7 +2541,7 @@ with contextual access to:
 ```text
 Provider
 
-Package
+Pass
 
 Pass
 
@@ -2548,7 +2563,7 @@ Overview
 
 Services
 
-Packages
+Passes
 
 Passes
 
@@ -2597,12 +2612,12 @@ The design document defines the final presentation.
 
 # 89. Deep Links
 
-Public package:
+Public Pass:
 
 ```text
 URL
  ↓
-Package
+Pass
 ```
 
 Public provider:
@@ -2815,7 +2830,7 @@ Examples:
 ```text
 Loading providers…
 
-Loading packages…
+Loading Passes…
 
 Loading your passes…
 
@@ -2845,19 +2860,19 @@ Customer:
 ```text
 No passes yet.
 
-Purchased session packages will appear here.
+Purchased session Passes will appear here.
 
 [ Discover Services ]
 ```
 
-Provider packages:
+Provider Passes:
 
 ```text
-No packages yet.
+No Passes yet.
 
-Create your first session package.
+Create your first session Pass.
 
-[ Create Package ]
+[ Create Pass ]
 ```
 
 Provider active passes:
@@ -2950,7 +2965,7 @@ Do not invent those rules inside the UI.
 
 ---
 
-# 102. Package Price Change
+# 102. Pass Price Change
 
 Example:
 
@@ -2979,31 +2994,31 @@ New purchase:
 300 NIM
 ```
 
-`Buy Again` leads to the current package before payment.
+`Buy Again` leads to the current Pass before payment.
 
 ---
 
-# 103. Package Session Quantity Change
+# 103. Pass Session Quantity Change
 
 Example:
 
 ```text
-Old package
+Old Pass
 10 sessions
 
-New package
+New Pass
 8 sessions
 ```
 
 A previously purchased 10-session pass remains a 10-session pass.
 
-The package definition must never retroactively mutate the customer's purchased entitlement.
+The Pass definition must never retroactively mutate the customer's purchased entitlement.
 
 ---
 
-# 104. Public Package Removed
+# 104. Public Pass Removed
 
-If the provider removes a package from discovery:
+If the provider removes a Pass from discovery:
 
 ```text
 new users can no longer purchase it
@@ -3097,7 +3112,7 @@ Users should be able to move naturally from:
 ```text
 discovery
 → provider
-→ package
+→ Pass
 → purchase
 ```
 
@@ -3157,7 +3172,7 @@ On mobile, the customer journey should remain concise:
 ```text
 Open Nimpass
       ↓
-Open package
+Open Pass
       ↓
 Buy Pass
       ↓
@@ -3199,7 +3214,7 @@ phone
 For example:
 
 ```text
-Provider manages packages on desktop
+Provider manages Passes on desktop
 
 Customer buys from phone
 
@@ -3227,7 +3242,7 @@ Canonical scenario:
    10 Personal Training Sessions
    250 NIM.
 
-5. Customer opens the package.
+5. Customer opens the Pass.
 
 6. Customer understands:
    provider,
@@ -3296,7 +3311,7 @@ Canonical scenario:
 
 30. Customer chooses Buy Again.
 
-31. Nimpass opens the current package terms.
+31. Nimpass opens the current Pass terms.
 
 32. Customer may purchase another pass.
 ```
@@ -3319,17 +3334,17 @@ This lifecycle is the core Nimpass experience.
 4. Provider creates service:
    Personal Training.
 
-5. Provider creates package:
+5. Provider creates Pass:
    10 Personal Training Sessions
    250 NIM.
 
-6. Provider previews the customer-facing package.
+6. Provider previews the customer-facing Pass.
 
 7. Provider publishes it.
 
-8. Package receives a public destination.
+8. Pass receives a public destination.
 
-9. Provider shares package link.
+9. Provider shares Pass link.
 
 10. Customer opens the link.
 
@@ -3363,7 +3378,7 @@ This lifecycle is the core Nimpass experience.
 
 23. Pass becomes completed.
 
-24. Customer may purchase another current package.
+24. Customer may purchase another current Pass.
 ```
 
 ---
@@ -3373,7 +3388,7 @@ This lifecycle is the core Nimpass experience.
 Nimpass should also support a journey with almost no discovery.
 
 ```text
-Alex sends package link in WhatsApp
+Alex sends Pass link in WhatsApp
         ↓
 Customer opens link
         ↓
@@ -3415,7 +3430,7 @@ A returning user must not repeat:
 ```text
 discovery
 provider research
-package research
+Pass research
 purchase
 ```
 
@@ -3442,9 +3457,9 @@ to use something they already own.
 | Pass has zero sessions                        | Redemption blocked                                 |
 | Pass expired                                  | Redemption blocked                                 |
 | Wrong wallet opens private pass               | Protected state not exposed                        |
-| Provider disables package                     | Existing pass remains separate                     |
-| Package price changes                         | Existing purchased terms unchanged                 |
-| Package session quantity changes              | Existing pass quantity unchanged                   |
+| Provider disables Pass                     | Existing pass remains separate                     |
+| Pass price changes                         | Existing purchased terms unchanged                 |
+| Pass session quantity changes              | Existing pass quantity unchanged                   |
 | User switches wallet                          | Private wallet state refreshed                     |
 | Provider authorization changes                | Provider access re-evaluated                       |
 | Cached data is stale                          | Sensitive operations rely on authoritative state   |
@@ -3456,7 +3471,7 @@ These are product requirements, not optional polish.
 # 117. Purchase State Model
 
 ```text
-PACKAGE_AVAILABLE
+PASS_AVAILABLE
       ↓
 PURCHASE_STARTED
       ↓
@@ -3551,7 +3566,7 @@ Public content such as:
 
 ```text
 provider description
-package description
+Pass description
 ```
 
 may tolerate ordinary web caching where appropriate.
@@ -3577,7 +3592,7 @@ The UI must reflect this distinction.
 
 ```text
 open Nimpass on web
-open package directly
+open Pass directly
 understand offer
 pay with NIM
 receive pass
@@ -3595,9 +3610,9 @@ buy again
 discovery
 provider pages
 search
-package sharing
+Pass sharing
 history
-provider package management
+provider Pass management
 active-pass management
 responsive Mini App experience
 clear loading / error / empty states
@@ -3628,7 +3643,7 @@ P2 work must never destabilize P0.
 ```text
 create provider presence
 create service
-create package
+create Pass
 set session quantity
 set NIM price
 publish
@@ -3641,11 +3656,11 @@ prevent duplicate redemption
 ## P1
 
 ```text
-package editing
-package availability
+Pass editing
+Pass availability
 activity
 pass search
-package preview
+Pass preview
 better public profile management
 ```
 
@@ -3850,6 +3865,13 @@ However, implementation must preserve the interaction philosophy defined here.
 
 # 128. Canonical End-to-End Scenario
 
+> **Refined by `DECISIONS.md` ADR-008 and ADR-020.** The first three steps below
+> are one screen, not three: Create Pass collects the Pass, derives the service
+> from its name, and creates the provider record on a wallet's first sale. The
+> outcome the scenario describes is unchanged — Alex Fitness exists, Personal
+> Training exists, the Pass belongs to both — and every step below is still what
+> must be true afterwards.
+
 Use this scenario when evaluating whether Nimpass is functioning correctly.
 
 ```text
@@ -3866,22 +3888,22 @@ He creates a service:
 
 Personal Training
 
-He creates a package:
+He creates a Pass:
 
 10 Personal Training Sessions
 250 NIM
 
-Alex previews the package.
+Alex previews the Pass.
 
 He publishes it.
 
-Nimpass provides a public package page.
+Nimpass provides a public Pass page.
 
-Alex shares the package URL with Emin.
+Alex shares the Pass URL with Emin.
 
 Emin opens the link from a normal browser on his phone.
 
-The package page opens directly.
+The Pass page opens directly.
 
 Emin sees:
 
@@ -3998,9 +4020,9 @@ Buy Again
 
 Emin chooses Buy Again.
 
-Nimpass opens Alex's current package.
+Nimpass opens Alex's current Pass.
 
-If the current price or package terms have changed, Emin sees those new terms before payment.
+If the current price or Pass terms have changed, Emin sees those new terms before payment.
 
 Emin may purchase another pass.
 
@@ -4093,7 +4115,7 @@ Technical implementation details belong in the dedicated integration, architectu
 The simplest test for every Nimpass flow is:
 
 ```text
-Can a provider create a 10-session package on the web,
+Can a provider create a 10-session Pass on the web,
 
 share it,
 

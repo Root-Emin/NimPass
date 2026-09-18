@@ -1,11 +1,13 @@
 import type {
   Compensation,
-  Pass,
+  PassSession,
+  PassSessionList,
+  PurchasedPass,
+  PurchasedPassPage,
   Purchase,
   RedemptionChallenge,
-  RedemptionConfirmation,
   RedemptionHistoryItem,
-  RedemptionLookup,
+  Settlement,
 } from '@/types/domain'
 
 /**
@@ -21,8 +23,8 @@ export function aPurchase(overrides: Partial<Purchase> = {}): Purchase {
   purchaseIntentId: 'aaaaaaaa-0000-4000-8000-000000000001',
   status: 'awaiting_payment',
   purchaseStatus: 'CREATED',
-  packageId: '00000000-0000-4000-8000-000000000004',
-  packageTitle: '10 Personal Training Sessions',
+  passId: '00000000-0000-4000-8000-000000000004',
+  passTitle: '10 Personal Training Sessions',
   serviceId: '00000000-0000-4000-8000-000000000003',
   providerId: '00000000-0000-4000-8000-000000000002',
   sessions: 10,
@@ -34,34 +36,118 @@ export function aPurchase(overrides: Partial<Purchase> = {}): Purchase {
   broadcastObservedAt: null,
   paymentVerification: null,
   failureCategory: null,
-  passId: null,
+  purchasedPassId: null,
   compensation: null,
+  settlement: null,
   paymentRequest: {
     recipient: 'NQ07 0000 0000 0000 0000 0000 0000 0000 0000',
     valueLuna: 25_000_000,
+    // 25,000,000 Luna is 250 NIM. Both are stated because the payment link
+    // carries decimal NIM while settlement compares integer Luna.
+    valueNim: '250',
     data: 'NP1:0123456789abcdef0123456789abcdef',
     network: 'TESTNET',
     expiresAt: '2099-01-01T00:00:00Z',
+    uri: 'nimiq:NQ0700000000000000000000000000000000?amount=250&message=NP1%3A0123456789abcdef0123456789abcdef',
   },
 } as Purchase), ...overrides }
 }
 
-export function aPass(overrides: Partial<Pass> = {}): Pass {
+export function aPurchasedPass(overrides: Partial<PurchasedPass> = {}): PurchasedPass {
   return { ...({
   id: '40000000-0000-4000-8000-000000000001',
   purchaseId: 'aaaaaaaa-0000-4000-8000-000000000001',
   ownerWallet: 'NQ07 0000 0000 0000 0000 0000 0000 0000 0081',
-  packageId: '00000000-0000-4000-8000-000000000004',
-  packageTitle: '10 Personal Training Sessions',
+  passId: '00000000-0000-4000-8000-000000000004',
+  passTitle: '10 Personal Training Sessions',
   serviceId: '00000000-0000-4000-8000-000000000003',
   providerId: '00000000-0000-4000-8000-000000000002',
+  serviceName: 'Personal Training',
+  providerName: 'Alex Fitness',
+  priceLuna: 25_000_000,
   originalSessions: 10,
   usedSessions: 3,
   remainingSessions: 7,
   status: 'ACTIVE',
   createdAt: '2026-08-01T10:00:00Z',
   expiresAt: null,
-} as Pass), ...overrides }
+  completedAt: null,
+  viewerRole: 'OWNER',
+} as PurchasedPass), ...overrides }
+}
+
+/**
+ * One session record of a purchased pass.
+ *
+ * Defaults to an open, undated session — the state most of a fresh pass is in
+ * and the one a test has to opt *out* of, not into.
+ */
+export function aPassSession(overrides: Partial<PassSession> = {}): PassSession {
+  return {
+    id: '50000000-0000-4000-8000-000000000001',
+    passId: '40000000-0000-4000-8000-000000000001',
+    sequenceNumber: 1,
+    status: 'UNSCHEDULED',
+    scheduledAt: null,
+    completedAt: null,
+    completedBy: null,
+    redemptionId: null,
+    createdAt: '2026-08-01T10:00:00Z',
+    updatedAt: '2026-08-01T10:00:00Z',
+    ...overrides,
+  }
+}
+
+/**
+ * A pass's whole session list, as `GET /passes/{passID}/sessions` sends it.
+ *
+ * The counters are derived from the rows here rather than passed in
+ * separately, because the backend writes them in one transaction and a
+ * fixture that let them disagree would let a bug in the screen pass.
+ */
+export function aPassSessionList(
+  sessions: PassSession[],
+  overrides: Partial<PassSessionList> = {},
+): PassSessionList {
+  const pass = aPurchasedPass({
+    originalSessions: sessions.length,
+    usedSessions: sessions.filter((s) => s.status === 'COMPLETED').length,
+    remainingSessions: sessions.filter((s) => s.status !== 'COMPLETED').length,
+    ...(overrides.pass ?? {}),
+  })
+  return {
+    passId: pass.id,
+    role: 'OWNER',
+    pass,
+    items: sessions,
+    totalSessions: pass.originalSessions,
+    completedSessions: pass.usedSessions,
+    remainingSessions: pass.remainingSessions,
+    ...overrides,
+  }
+}
+
+/** A pass's sessions: `completed` of `total` done, the rest open. */
+export function passSessions(total: number, completed = 0): PassSession[] {
+  return Array.from({ length: total }, (_, index) =>
+    aPassSession({
+      id: `50000000-0000-4000-8000-0000000000${String(index + 1).padStart(2, '0')}`,
+      sequenceNumber: index + 1,
+      status: index < completed ? 'COMPLETED' : 'UNSCHEDULED',
+      completedAt: index < completed ? '2026-08-10T09:00:00Z' : null,
+      completedBy: index < completed ? 'OWNER' : null,
+    }),
+  )
+}
+
+/**
+ * One page of `GET /passes`.
+ *
+ * `nextCursor` defaults to null — the end of the collection — so a test only
+ * says otherwise when paging is what it is testing.
+ */
+export function aPurchasedPassPage(items: PurchasedPass[], nextCursor: string | null = null): PurchasedPassPage {
+  return { items, nextCursor }
 }
 
 /**
@@ -75,10 +161,10 @@ export function aPass(overrides: Partial<Pass> = {}): Pass {
 export function aCompensation(overrides: Partial<Compensation> = {}): Compensation {
   return {
     status: 'OPEN',
-    reason: 'PACKAGE_EXPIRED_BEFORE_ACTIVATION',
+    reason: 'PASS_EXPIRED_BEFORE_ACTIVATION',
     createdAt: '2026-09-13T10:40:00Z',
     message:
-      'Payment received, but this package expired before the pass could be activated. Do not pay again.',
+      'Payment received, but this pass expired before the pass could be activated. Do not pay again.',
     doNotPayAgain: true,
     automatedRefund: false,
     ...overrides,
@@ -89,7 +175,7 @@ export function aCompensation(overrides: Partial<Compensation> = {}): Compensati
  * A purchase whose payment was verified and finalised, but which produced no
  * pass — the path §2-§7 of Milestone 4A exist for.
  *
- * `passId` stays null and `paymentRequest` stays null on purpose: there is
+ * `purchasedPassId` stays null and `paymentRequest` stays null on purpose: there is
  * nothing to show and nothing left to pay.
  */
 export function aCompensationPurchase(overrides: Partial<Purchase> = {}): Purchase {
@@ -100,19 +186,94 @@ export function aCompensationPurchase(overrides: Partial<Purchase> = {}): Purcha
     transactionHash: 'a1b2c3d4'.repeat(8),
     broadcastObservedAt: '2026-09-13T10:20:00Z',
     paymentRequest: null,
-    passId: null,
+    purchasedPassId: null,
     compensation: aCompensation(),
+    settlement: aSettlement({ status: 'FINALIZED' }),
+    ...overrides,
+  })
+}
+
+/**
+ * The settlement behind an accepted payment, as `Settlement` shapes it.
+ *
+ * Defaults to `INCLUDED` — provisional — because under
+ * `NIMIQ_CONFIRMATION_POLICY=inclusion` that is what a freshly completed
+ * purchase carries for the first minute or so of its life (ADR-021). A fixture
+ * defaulting to `FINALIZED` would make the normal case the one no test covers.
+ *
+ * `finalityBlock` and `finalizedAt` are null here and non-null under
+ * `FINALIZED`, mirroring the columns the backend actually leaves empty until a
+ * macro block is observed.
+ */
+export function aSettlement(overrides: Partial<Settlement> = {}): Settlement {
+  const finalized = overrides.status === 'FINALIZED'
+  return {
+    status: 'INCLUDED',
+    provisional: !finalized,
+    inclusionBlock: 1_000,
+    includedAt: '2026-09-13T10:20:01Z',
+    expectedFinalityBlock: 1_060,
+    finalityBlock: finalized ? 1_060 : null,
+    finalizedAt: finalized ? '2026-09-13T10:21:00Z' : null,
+    contestedAt: null,
+    contestReason: null,
+    ...overrides,
+  }
+}
+
+/**
+ * A completed purchase with its pass issued on a still-provisional payment.
+ *
+ * The fast-checkout outcome: `completed`, a pass to open, and a settlement the
+ * finality worker has not promoted yet. Nothing about the customer's view may
+ * depend on that difference (ADR-021), which is precisely why a fixture for it
+ * exists.
+ */
+export function aProvisionalPurchase(overrides: Partial<Purchase> = {}): Purchase {
+  return aPurchase({
+    status: 'completed',
+    purchaseStatus: 'CONFIRMED',
+    paymentVerification: 'CONFIRMED',
+    transactionHash: 'a1b2c3d4'.repeat(8),
+    broadcastObservedAt: '2026-09-13T10:20:00Z',
+    paymentRequest: null,
+    purchasedPassId: '40000000-0000-4000-8000-000000000001',
+    settlement: aSettlement(),
+    ...overrides,
+  })
+}
+
+/**
+ * The reversed-settlement case: a pass issued on an inclusion that never became
+ * canonical.
+ *
+ * Distinct from `aCompensationPurchase` in the one way that matters to the
+ * customer — `doNotPayAgain` is false, because no NIM ever left their wallet.
+ */
+export function aReversedSettlementPurchase(overrides: Partial<Purchase> = {}): Purchase {
+  return aCompensationPurchase({
+    compensation: aCompensation({
+      reason: 'PAYMENT_SETTLEMENT_REVERSED',
+      message:
+        'The payment behind this purchase did not stay on the canonical chain. Nothing was charged.',
+      doNotPayAgain: false,
+    }),
+    settlement: aSettlement({
+      status: 'CONTESTED',
+      provisional: false,
+      contestedAt: '2026-09-13T10:22:00Z',
+      contestReason: 'SETTLEMENT_REVERSED',
+    }),
     ...overrides,
   })
 }
 
 /* -- Redemption ----------------------------------------------------------
  *
- * Shaped exactly as `backend/openapi.yaml` shapes them. The one detail worth
- * naming: `redemptionReference` defaults to null, because that is what reading
- * a challenge back actually returns. Only the authorization and rotation
- * builders below carry one — a fixture that handed out references freely would
- * let a bug that shows an unauthorised QR pass every test.
+ * Shaped exactly as `backend/openapi.yaml` shapes them. A challenge is only
+ * ever CREATED or CONSUMED in practice: authorizing spends the session in the
+ * same transaction, so `aConsumedChallenge` is what the authorization endpoint
+ * actually returns.
  * -------------------------------------------------------------------- */
 
 const CHALLENGE_ID = '50000000-0000-4000-8000-000000000001'
@@ -134,8 +295,6 @@ export const CANONICAL_REDEMPTION_MESSAGE = [
   'Expected-Used-Sessions: 3',
   'Expected-Remaining-Sessions: 7',
 ].join('\n')
-
-export const A_REFERENCE = `NR1:${'ab12cd34'.repeat(8)}`
 
 export function aRedemptionChallenge(
   overrides: Partial<RedemptionChallenge> = {},
@@ -160,58 +319,35 @@ export function aRedemptionChallenge(
       expiresAt: null,
     },
     redemption: null,
-    redemptionReference: null,
-    qrExpiresAt: null,
     ...overrides,
   }
 }
 
-/** What the authorization endpoint returns: authorised, *with* a reference. */
-export function anAuthorizedChallenge(
+/**
+ * What the authorization endpoint returns: consumed, with the session already
+ * spent and the resulting counts on the pass snapshot.
+ */
+export function aConsumedChallenge(
   overrides: Partial<RedemptionChallenge> = {},
 ): RedemptionChallenge {
   return aRedemptionChallenge({
-    status: 'AUTHORIZED',
+    status: 'CONSUMED',
     authorizedAt: '2026-09-14T10:01:00Z',
-    redemptionReference: A_REFERENCE,
-    qrExpiresAt: '2099-01-01T00:00:00Z',
+    consumedAt: '2026-09-14T10:01:00Z',
+    pass: {
+      status: 'ACTIVE',
+      originalSessions: 10,
+      usedSessions: 4,
+      remainingSessions: 6,
+      expiresAt: null,
+    },
+    redemption: {
+      id: '70000000-0000-4000-8000-000000000001',
+      sessionOrdinal: 4,
+      redeemedAt: '2026-09-14T10:01:00Z',
+    },
     ...overrides,
   })
-}
-
-export function aRedemptionLookup(overrides: Partial<RedemptionLookup> = {}): RedemptionLookup {
-  return {
-    challengeId: CHALLENGE_ID,
-    passId: '40000000-0000-4000-8000-000000000001',
-    providerId: '00000000-0000-4000-8000-000000000002',
-    serviceName: 'Personal Training',
-    packageTitle: '10 Personal Training Sessions',
-    challengeStatus: 'AUTHORIZED',
-    authorizationStatus: 'AUTHORIZED',
-    passStatus: 'ACTIVE',
-    usedSessions: 3,
-    remainingSessions: 7,
-    nextSessionOrdinal: 4,
-    passExpiresAt: null,
-    challengeExpiresAt: '2099-01-01T00:00:00Z',
-    referenceExpiresAt: '2099-01-01T00:00:00Z',
-    ...overrides,
-  }
-}
-
-export function aRedemptionConfirmation(
-  overrides: Partial<RedemptionConfirmation> = {},
-): RedemptionConfirmation {
-  return {
-    redemptionId: '70000000-0000-4000-8000-000000000001',
-    passId: '40000000-0000-4000-8000-000000000001',
-    redeemedAt: '2026-09-14T10:02:00Z',
-    usedSessions: 4,
-    remainingSessions: 6,
-    passStatus: 'ACTIVE',
-    completed: false,
-    ...overrides,
-  }
 }
 
 export function aRedemptionHistoryItem(
@@ -223,7 +359,7 @@ export function aRedemptionHistoryItem(
     passId: '40000000-0000-4000-8000-000000000001',
     providerId: '00000000-0000-4000-8000-000000000002',
     serviceId: '00000000-0000-4000-8000-000000000003',
-    packageId: '00000000-0000-4000-8000-000000000004',
+    sourcePassId: '00000000-0000-4000-8000-000000000004',
     sessionOrdinal: 1,
     ownerWallet: 'NQ07 0000 0000 0000 0000 0000 0000 0000 0081',
     redeemedAt: '2026-08-10T09:00:00Z',

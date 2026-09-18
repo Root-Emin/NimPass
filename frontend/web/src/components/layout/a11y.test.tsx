@@ -2,7 +2,7 @@ import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { anOffer, aProvider, aService, mockApi, ok } from '@/test/mock-api'
+import { aPublicPass, aProvider, aService, mockApi, ok } from '@/test/mock-api'
 import { renderApp, stubSession, stubWallet } from '@/test/render'
 
 afterEach(() => {
@@ -16,7 +16,7 @@ afterEach(() => {
 describe('accessibility', () => {
   it('gives every public page exactly one h1 and semantic landmarks', async () => {
     mockApi({
-      '/api/v1/public/packages': () => ok({ items: [anOffer()] }),
+      '/api/v1/public/passes': () => ok({ items: [aPublicPass()] }),
     })
 
     renderApp('/discover')
@@ -30,15 +30,17 @@ describe('accessibility', () => {
 
   it('labels every icon-only control', async () => {
     mockApi({
-      '/api/v1/public/packages': () => ok({ items: [] }),
+      '/api/v1/public/passes': () => ok({ items: [] }),
     })
 
     const user = userEvent.setup()
-    renderApp('/discover')
+    // The menu trigger only exists for a signed-in visitor, since the header
+    // lists no destinations without one.
+    renderApp('/discover', { session: stubSession() })
 
     expect(await screen.findByRole('button', { name: 'Open menu' })).toBeInTheDocument()
 
-    await user.type(screen.getByLabelText('Search services or providers'), 'x')
+    await user.type(screen.getByLabelText('Search passes or providers'), 'x')
     expect(screen.getByRole('button', { name: 'Clear search' })).toBeInTheDocument()
   })
 
@@ -46,18 +48,18 @@ describe('accessibility', () => {
     mockApi({
       '/api/v1/providers': () => ok({ items: [aProvider()] }),
       '/api/v1/providers/00000000-0000-4000-8000-000000000002/services': () => ok({ items: [aService()] }),
-      '/api/v1/providers/00000000-0000-4000-8000-000000000002/packages': () => ok({ items: [] }),
+      '/api/v1/providers/00000000-0000-4000-8000-000000000002/passes': () => ok({ items: [] }),
     })
 
     const user = userEvent.setup()
-    renderApp('/provider/packages/new', { wallet: stubWallet(), session: stubSession() })
+    renderApp('/provider/passes/new', { wallet: stubWallet(), session: stubSession() })
 
     const sessions = await screen.findByLabelText('Number of sessions')
     expect(sessions).toBeInTheDocument()
 
     await user.type(sessions, '0')
-    await user.type(screen.getByLabelText('Package name'), 'Block')
-    await user.click(screen.getByRole('button', { name: 'Create package' }))
+    await user.type(screen.getByLabelText('Pass name'), 'Block')
+    await user.click(screen.getByRole('button', { name: 'Create Pass' }))
 
     const error = await screen.findByText('Enter a whole number of sessions, at least 1.')
     expect(sessions).toHaveAttribute('aria-invalid', 'true')
@@ -66,11 +68,11 @@ describe('accessibility', () => {
 
   it('traps the mobile menu in a labelled dialog that can be closed', async () => {
     mockApi({
-      '/api/v1/public/packages': () => ok({ items: [] }),
+      '/api/v1/public/passes': () => ok({ items: [] }),
     })
 
     const user = userEvent.setup()
-    renderApp('/discover')
+    renderApp('/discover', { session: stubSession() })
 
     await user.click(await screen.findByRole('button', { name: 'Open menu' }))
 
@@ -82,9 +84,9 @@ describe('accessibility', () => {
   })
 
   it('keeps the hidden mobile purchase bar out of the tab order', async () => {
-    mockApi({ [`/api/v1/public/packages/${anOffer().package.id}`]: () => ok(anOffer()) })
+    mockApi({ [`/api/v1/public/passes/${aPublicPass().pass.id}`]: () => ok(aPublicPass()) })
 
-    const { container } = renderApp(`/packages/${anOffer().package.id}`)
+    const { container } = renderApp(`/pass/${aPublicPass().pass.id}`)
     await screen.findByRole('heading', { level: 1 })
 
     // The bar is off screen until the panel scrolls away. It holds a real
@@ -102,7 +104,7 @@ describe('accessibility', () => {
 describe('landmarks and skip navigation', () => {
   it('keeps hero content inside the main landmark', async () => {
     mockApi({
-      '/api/v1/public/packages': () => ok({ items: [] }),
+      '/api/v1/public/passes': () => ok({ items: [] }),
     })
 
     renderApp('/discover')
@@ -118,7 +120,7 @@ describe('landmarks and skip navigation', () => {
 
   it('has exactly one main landmark', async () => {
     mockApi({
-      '/api/v1/public/packages': () => ok({ items: [] }),
+      '/api/v1/public/passes': () => ok({ items: [] }),
     })
 
     renderApp('/discover')
@@ -129,7 +131,7 @@ describe('landmarks and skip navigation', () => {
 
   it('gives the skip link a target that can actually take focus', async () => {
     mockApi({
-      '/api/v1/public/packages': () => ok({ items: [] }),
+      '/api/v1/public/passes': () => ok({ items: [] }),
     })
 
     renderApp('/discover')

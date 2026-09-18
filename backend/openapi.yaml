@@ -9,6 +9,14 @@ info:
     Payout completion requires signatures by both the new payout wallet and the
     authenticated owner wallet over that same challenge message.
     Unsafe methods require an exact configured Origin (or Referer fallback).
+    Shared middleware errors use the Error schema: ORIGIN_FORBIDDEN (403),
+    AUTH_REQUIRED (401), CSRF_INVALID (403), CONTENT_TYPE (415),
+    VALIDATION_ERROR (400), RATE_LIMITED (429) and INTERNAL_ERROR (500).
+    Session lookup infrastructure failures return INTERNAL_ERROR (500), preserving
+    the cookie; AUTH_REQUIRED (401) means a missing, invalid, expired or revoked session.
+    Authenticated operations require a session; every unsafe authenticated
+    operation requires CSRF. JSON bodies reject unknown fields and trailing data.
+    Text length bounds are UTF-8 byte limits after documented normalization.
     Authenticated unsafe methods additionally require X-CSRF-Token, obtained
     from login or GET /auth/session. Cookies are HttpOnly, SameSite=Lax; HTTPS
     deployments use Secure __Host-nimpass_session, local HTTP development uses
@@ -16,12 +24,21 @@ info:
     Purchase payment requests are server-authored. Map paymentRequest.valueLuna
     to the Mini App SDK's sendBasicTransactionWithData({value}) parameter;
     pass paymentRequest.data unchanged. A returned wallet txHash is not payment
-    success. Only a server-verified, main-chain included, macro-finalized payment
-    atomically creates a Pass. Mini App sign() preprocessing still requires a
+    success.     Only a server-verified, main-chain included, macro-finalized payment
+    atomically creates a purchased pass. Mini App sign() preprocessing still requires a
     captured live Nimiq Pay fixture before production authentication readiness.
     Settlement after the 30-minute intent expiry is accepted only within five
     minutes and only if the backend observed the matching transaction in the
     Nimiq mempool before expiry. Hash submission alone is not broadcast proof.
+    transactionHash may appear without any client submission: for the desktop QR
+    checkout the payment is made inside Nimiq Pay with no client able to report a
+    hash, so a background sweep queries getTransactionsByAddress on the intent's
+    recipient and adopts a transaction only when sender, recipient, exact Luna
+    value, network and timing all match the intent, and its data field carries
+    either this intent's NP1 reference or nothing at all. A transaction bearing a
+    different NP1 reference never settles the intent. Discovery only nominates a
+    hash; inclusion, macro finality, uniqueness and atomic single-pass issuance are
+    unchanged.
 servers:
   - url: /api/v1
 security:
@@ -38,6 +55,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/ChallengeInput' }
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '201': { description: Challenge created, content: { application/json: { schema: { $ref: '#/components/schemas/Challenge' } } } }
         '400': { $ref: '#/components/responses/Error' }
         '429': { $ref: '#/components/responses/Error' }
@@ -52,6 +70,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/Proof' }
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '201': { description: Authenticated; sets session cookie, content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } } }
         '401': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -62,6 +81,7 @@ paths:
       summary: Get current session
       operationId: currentSession
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '200': { description: Current identity and CSRF token, content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } } }
         '401': { $ref: '#/components/responses/Error' }
     delete:
@@ -69,6 +89,7 @@ paths:
       operationId: logout
       parameters: [ { $ref: '#/components/parameters/Csrf' } ]
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '204': { description: Session revoked; clears cookie }
         '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
@@ -77,26 +98,35 @@ paths:
       summary: List own providers
       operationId: listOwnProviders
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '200': { description: Own providers, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Provider' } } } } } } }
         '401': { $ref: '#/components/responses/Error' }
     post:
       summary: Create provider profile
+      description: >-
+        The payout wallet is adopted from the authenticated session and the
+        provider is returned already verified (DECISIONS.md ADR-025). No field
+        of ProviderInput names a payout address; changing one afterwards goes
+        through /providers/{providerID}/payout-challenges.
       operationId: createProvider
       parameters: [ { $ref: '#/components/parameters/Csrf' } ]
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/ProviderInput' } } }
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '201': { description: Created provider, content: { application/json: { schema: { $ref: '#/components/schemas/Provider' } } } }
         '400': { $ref: '#/components/responses/Error' }
         '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
   /providers/{providerID}:
     parameters: [ { $ref: '#/components/parameters/ProviderID' } ]
     get:
       summary: Get own provider
       operationId: getOwnProvider
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '200': { description: Own provider, content: { application/json: { schema: { $ref: '#/components/schemas/Provider' } } } }
         '404': { $ref: '#/components/responses/Error' }
     patch:
@@ -107,8 +137,10 @@ paths:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/ProviderInput' } } }
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '200': { description: Updated profile; payout fields cannot be mass-assigned, content: { application/json: { schema: { $ref: '#/components/schemas/Provider' } } } }
         '404': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
   /providers/{providerID}/payout-challenges:
     parameters: [ { $ref: '#/components/parameters/ProviderID' } ]
     post:
@@ -119,6 +151,7 @@ paths:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/ChallengeInput' } } }
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '201': { description: Purpose VERIFY_PROVIDER_WALLET challenge, content: { application/json: { schema: { $ref: '#/components/schemas/Challenge' } } } }
         '404': { $ref: '#/components/responses/Error' }
         '429': { $ref: '#/components/responses/Error' }
@@ -132,6 +165,7 @@ paths:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/PayoutProof' } } }
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '200': { description: Verified provider payout wallet, content: { application/json: { schema: { $ref: '#/components/schemas/Provider' } } } }
         '401': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -142,6 +176,7 @@ paths:
       summary: List own services
       operationId: listOwnServices
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '200': { description: Services, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Service' } } } } } } }
         '404': { $ref: '#/components/responses/Error' }
     post:
@@ -152,15 +187,18 @@ paths:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/ServiceInput' } } }
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '201': { description: Draft service, content: { application/json: { schema: { $ref: '#/components/schemas/Service' } } } }
         '400': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
   /services/{serviceID}:
     parameters: [ { $ref: '#/components/parameters/ServiceID' } ]
     get:
       summary: Get own service
       operationId: getOwnService
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '200': { description: Service, content: { application/json: { schema: { $ref: '#/components/schemas/Service' } } } }
         '404': { $ref: '#/components/responses/Error' }
     patch:
@@ -172,79 +210,234 @@ paths:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/ServiceUpdate' } } }
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '200': { description: Updated service, content: { application/json: { schema: { $ref: '#/components/schemas/Service' } } } }
         '400': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
-  /providers/{providerID}/services/{serviceID}/packages:
+        '429': { $ref: '#/components/responses/Error' }
+  /providers/{providerID}/services/{serviceID}/passes:
     parameters: [ { $ref: '#/components/parameters/ProviderID' }, { $ref: '#/components/parameters/ServiceID' } ]
     post:
-      summary: Create package under own service
-      operationId: createPackage
+      summary: Create pass under own service
+      operationId: createPass
       parameters: [ { $ref: '#/components/parameters/Csrf' } ]
       requestBody:
         required: true
-        content: { application/json: { schema: { $ref: '#/components/schemas/PackageInput' } } }
+        content: { application/json: { schema: { $ref: '#/components/schemas/PassInput' } } }
       responses:
-        '201': { description: Draft package, content: { application/json: { schema: { $ref: '#/components/schemas/Package' } } } }
+        default: { $ref: '#/components/responses/Error' }
+        '201': { description: Draft pass, content: { application/json: { schema: { $ref: '#/components/schemas/Pass' } } } }
         '400': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
-  /providers/{providerID}/packages:
+        '429': { $ref: '#/components/responses/Error' }
+  /providers/{providerID}/passes:
     parameters: [ { $ref: '#/components/parameters/ProviderID' } ]
     get:
-      summary: List own packages
-      operationId: listOwnPackages
+      summary: List own catalog passes
+      operationId: listOwnPasses
       responses:
-        '200': { description: Own packages, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Package' } } } } } } }
+        default: { $ref: '#/components/responses/Error' }
+        '200': { description: Own catalog passes, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Pass' } } } } } } }
         '404': { $ref: '#/components/responses/Error' }
-  /packages/{packageID}:
-    parameters: [ { $ref: '#/components/parameters/PackageID' } ]
+  /catalog/passes/{passID}:
+    parameters: [ { $ref: '#/components/parameters/PassID' } ]
     get:
-      summary: Get own package
-      operationId: getOwnPackage
+      summary: Get own catalog pass
+      operationId: getOwnPass
       responses:
-        '200': { description: Own package, content: { application/json: { schema: { $ref: '#/components/schemas/Package' } } } }
+        default: { $ref: '#/components/responses/Error' }
+        '200': { description: Own catalog pass, content: { application/json: { schema: { $ref: '#/components/schemas/Pass' } } } }
         '404': { $ref: '#/components/responses/Error' }
     patch:
-      summary: Update draft package
-      operationId: updatePackage
-      description: Full replacement of draft/unavailable editable fields; published packages are immutable.
+      summary: Update draft pass
+      operationId: updatePass
+      description: Full replacement of draft/unavailable editable fields; published passes are immutable.
       parameters: [ { $ref: '#/components/parameters/Csrf' } ]
       requestBody:
         required: true
-        content: { application/json: { schema: { $ref: '#/components/schemas/PackageInput' } } }
+        content: { application/json: { schema: { $ref: '#/components/schemas/PassInput' } } }
       responses:
-        '200': { description: Updated package, content: { application/json: { schema: { $ref: '#/components/schemas/Package' } } } }
+        default: { $ref: '#/components/responses/Error' }
+        '200': { description: Updated pass, content: { application/json: { schema: { $ref: '#/components/schemas/Pass' } } } }
         '400': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
-  /packages/{packageID}/publish:
-    parameters: [ { $ref: '#/components/parameters/PackageID' } ]
-    post:
-      summary: Publish package
-      operationId: publishPackage
-      description: Requires an active service, valid package, and verified provider payout wallet.
+        '429': { $ref: '#/components/responses/Error' }
+    delete:
+      summary: Delete (archive) a pass
+      operationId: archivePass
+      description: |
+        Withdraws the pass from sale permanently. Only the provider that owns it
+        may call this; any other identity receives 404. The pass row is retained
+        with status ARCHIVED rather than deleted, because purchases, verified
+        payments and already-purchased customer passes reference it: those
+        records, their sessions and their redemption history are unaffected and
+        remain readable. An archived pass disappears from the owner's catalog
+        list and from all public discovery, cannot be purchased, edited or
+        published, and archiving it again returns 409. Responds with the
+        archived pass rather than 204.
       parameters: [ { $ref: '#/components/parameters/Csrf' } ]
       responses:
-        '200': { description: Published package, content: { application/json: { schema: { $ref: '#/components/schemas/Package' } } } }
+        default: { $ref: '#/components/responses/Error' }
+        '200': { description: Archived pass, content: { application/json: { schema: { $ref: '#/components/schemas/Pass' } } } }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
-  /public/packages:
-    get:
-      summary: Discover published packages
-      operationId: listPublicPackages
-      security: []
+        '429': { $ref: '#/components/responses/Error' }
+  /catalog/passes/{passID}/publish:
+    parameters: [ { $ref: '#/components/parameters/PassID' } ]
+    post:
+      summary: Publish pass
+      operationId: publishPass
+      description: |
+        Puts the pass on sale. Requires an active service, valid pass, and
+        verified provider payout wallet. Accepts a pass in status DRAFT (never
+        published) or UNAVAILABLE (withdrawn from the listing), so a withdrawn
+        pass returns to sale on its own id, keeping its data and its purchase
+        history. ACTIVE and ARCHIVED are both refused with 409: the pass is
+        already on sale, or is permanently withdrawn.
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
       responses:
-        '200': { description: 'Published, unexpired packages only', content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/PublicOffer' } } } } } } }
-        '400': { $ref: '#/components/responses/Error' }
-  /public/packages/{packageID}:
-    parameters: [ { $ref: '#/components/parameters/PackageID' } ]
-    get:
-      summary: Get published package
-      operationId: getPublicPackage
-      security: []
-      responses:
-        '200': { description: Published offer, content: { application/json: { schema: { $ref: '#/components/schemas/PublicOffer' } } } }
+        default: { $ref: '#/components/responses/Error' }
+        '200': { description: Published pass, content: { application/json: { schema: { $ref: '#/components/schemas/Pass' } } } }
         '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+  /catalog/passes/{passID}/unpublish:
+    parameters: [ { $ref: '#/components/parameters/PassID' } ]
+    post:
+      summary: Remove a pass from the listing
+      operationId: unpublishPass
+      description: |
+        Withdraws the pass from sale without deleting it, setting status
+        UNAVAILABLE. This is not the delete transition: the pass keeps its id
+        and all of its data, stays in the owner's catalog list so it can be
+        edited, and can be put back on sale with POST
+        /catalog/passes/{passID}/publish.
+
+        While unpublished the pass is absent from public discovery, from the
+        provider's public storefront and from the provider directory's pass
+        count, has no public pass page, and cannot be purchased — a purchase
+        attempt is refused with 409 PASS_UNAVAILABLE regardless of what the
+        client had on screen.
+
+        Nothing already sold is affected: purchased passes, their remaining
+        sessions, purchase history, verified payments and redemption records
+        are untouched and stay readable.
+
+        Only the provider that owns the pass may call this; any other identity
+        receives 404. Idempotent — unpublishing an already unpublished pass
+        responds 200 with the unchanged pass and writes nothing. A DRAFT or
+        ARCHIVED pass is refused with 409, because neither is on sale to
+        withdraw.
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      responses:
+        default: { $ref: '#/components/responses/Error' }
+        '200': { description: Unpublished pass, content: { application/json: { schema: { $ref: '#/components/schemas/Pass' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+  /media:
+    post:
+      summary: Upload a pass cover image
+      operationId: uploadMedia
+      description: |
+        Authenticated multipart upload of a JPEG or PNG pass cover. The original
+        filename and declared content type are ignored. The server checks magic
+        bytes, decodes the image, rejects oversized dimensions, re-encodes as
+        JPEG and stores it under a generated UUID. Maximum upload size is 2 MiB.
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        default: { $ref: '#/components/responses/Error' }
+        '201': { description: Stored cover, content: { application/json: { schema: { $ref: '#/components/schemas/Media' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '415': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+  /media/{mediaID}:
+    parameters: [ { $ref: '#/components/parameters/MediaID' } ]
+    get:
+      summary: Fetch a stored pass cover
+      operationId: getMedia
+      security: []
+      responses:
+        default: { $ref: '#/components/responses/Error' }
+        '200':
+          description: Re-encoded JPEG cover
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+  /public/config:
+    get:
+      summary: Public network and environment of this API
+      operationId: getPublicConfig
+      security: []
+      responses:
+        default: { $ref: '#/components/responses/Error' }
+        '200':
+          description: Network and environment this deployment is bound to
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [network, environment]
+                properties:
+                  network: { type: string, enum: [TESTNET, MAINNET] }
+                  environment: { type: string, enum: [development, test, production] }
+  /public/passes:
+    get:
+      summary: Discover published passes
+      operationId: listPublicPasses
+      description: |
+        Up to 100 public passes, newest first with ID tie-breaker. Category is
+        inherited from the service; omitted or empty means all categories
+        including unclassified services. Unknown or repeated category values
+        return VALIDATION_ERROR. `provider` narrows the list to one provider's
+        storefront; a malformed or repeated value returns VALIDATION_ERROR, and
+        an unknown provider yields an empty list, because absence and having
+        published nothing are the same public fact.
+      parameters:
+        - { in: query, name: category, schema: { $ref: '#/components/schemas/Category' } }
+        - { in: query, name: provider, schema: { type: string, format: uuid } }
+      security: []
+      responses:
+        default: { $ref: '#/components/responses/Error' }
+        '200': { description: 'Published, unexpired passes only', content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/PublicPass' } } } } } } }
+        '400': { $ref: '#/components/responses/Error' }
+  /public/passes/{passID}:
+    parameters: [ { $ref: '#/components/parameters/PassID' } ]
+    get:
+      summary: Get published pass
+      operationId: getPublicPass
+      security: []
+      responses:
+        default: { $ref: '#/components/responses/Error' }
+        '200': { description: Published offer, content: { application/json: { schema: { $ref: '#/components/schemas/PublicPass' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /public/providers:
+    get:
+      summary: List discoverable providers
+      operationId: listPublicProviders
+      description: |
+        Up to 200 providers, ordered by how many passes each currently has on
+        sale and then by name. A provider is listed when their payout wallet is
+        verified and they have at least one pass that GET /public/passes would
+        return, which is the same visibility rule the public catalog uses.
+        passCount is that same count.
+      security: []
+      responses:
+        default: { $ref: '#/components/responses/Error' }
+        '200': { description: Discoverable providers, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/PublicProviderSummary' } } } } } } }
   /public/providers/{providerID}:
     parameters: [ { $ref: '#/components/parameters/ProviderID' } ]
     get:
@@ -252,18 +445,20 @@ paths:
       operationId: getPublicProvider
       security: []
       responses:
-        '200': { description: Public verified provider, content: { application/json: { schema: { $ref: '#/components/schemas/PublicProvider' } } } }
+        default: { $ref: '#/components/responses/Error' }
+        '200': { description: Public verified provider. Owner wallet is included for the identicon; payout wallet and identity id are not., content: { application/json: { schema: { $ref: '#/components/schemas/PublicProvider' } } } }
         '404': { $ref: '#/components/responses/Error' }
   /purchases:
     post:
-      summary: Create or recover a published-package purchase intent
+      summary: Create or recover a published-pass purchase intent
       operationId: createPurchase
-      description: Authenticated wallet is the only customer identity. Reuses an active unpaid intent for this wallet/package even after the fixed-package cutoff. New fixed-expiration intents are rejected at or after package.expires_at minus 35 minutes (30-minute TTL plus five-minute settlement grace) with HTTP 409 PACKAGE_PURCHASE_CUTOFF. The package expiration and existing intent snapshot are not changed. The optional idempotency key is bound to this customer; reuse with a different package conflicts.
+      description: Authenticated wallet is the only customer identity. Reuses an active unpaid intent for this wallet/pass even after the fixed-pass cutoff. New fixed-expiration intents are rejected at or after pass.expires_at minus 35 minutes (30-minute TTL plus five-minute settlement grace) with HTTP 409 PASS_PURCHASE_CUTOFF. The pass expiration and existing intent snapshot are not changed. A provider cannot buy a pass from their own catalogue — the pass's provider is resolved server-side and a matching authenticated account is refused with HTTP 403 SELF_PURCHASE_NOT_ALLOWED, whatever the client sends. The same 403 answers a purchase whose payee is the buying wallet — the pass's payout address is read server-side and compared with the address this session proved, so a payment that would return to its own sender is refused before it is requested. A customer who already holds a live pass for this pass — status ACTIVE, sessions remaining, expiration still ahead — is refused with HTTP 409 PASS_ALREADY_OWNED; a completed, expired or cancelled pass does not refuse anything, which is Buy Again. A customer whose previous intent for this pass has expired but is still inside the five-minute settlement grace is refused with HTTP 409 PURCHASE_IN_SETTLEMENT, because that intent can still be paid and a second one would let the same customer pay twice; it clears by itself when the grace ends. Recovering an unpaid intent and replaying an idempotency key both answer 200 as before and are never refused by this rule. A pass that is not on sale — unpublished, still a draft, archived, or under an inactive service — is refused with HTTP 409 PASS_UNAVAILABLE; this is checked server-side against the pass row when the intent is created, so a stale client screen cannot start a payment for a withdrawn pass. The optional idempotency key is bound to this customer; reuse with a different pass conflicts.
       parameters: [ { $ref: '#/components/parameters/Csrf' }, { $ref: '#/components/parameters/IdempotencyKey' } ]
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/CreatePurchase' } } }
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '201': { description: New purchase intent, content: { application/json: { schema: { $ref: '#/components/schemas/Purchase' } } } }
         '200': { description: Existing recoverable intent, content: { application/json: { schema: { $ref: '#/components/schemas/Purchase' } } } }
         '400': { $ref: '#/components/responses/Error' }
@@ -275,6 +470,7 @@ paths:
       summary: Recover own purchase intents and payment states
       operationId: listPurchases
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '200': { description: Up to 100 newest own purchases, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Purchase' } } } } } } }
         '401': { $ref: '#/components/responses/Error' }
   /purchases/{purchaseID}:
@@ -283,8 +479,41 @@ paths:
       summary: Get own purchase intent and authoritative payment state
       operationId: getPurchase
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '200': { description: Own purchase, content: { application/json: { schema: { $ref: '#/components/schemas/Purchase' } } } }
         '404': { $ref: '#/components/responses/Error' }
+  /purchases/{purchaseID}/wallet-attempts:
+    parameters: [ { $ref: '#/components/parameters/PurchaseID' } ]
+    post:
+      summary: Lock this purchase to one in-flight wallet dispatch
+      operationId: beginWalletAttempt
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [attemptId]
+              properties:
+                attemptId: { type: string, format: uuid }
+      responses:
+        default: { $ref: '#/components/responses/Error' }
+        '201': { description: Purchase with the wallet attempt recorded, content: { application/json: { schema: { $ref: '#/components/schemas/Purchase' } } } }
+        '409': { $ref: '#/components/responses/Error' }
+  /purchases/{purchaseID}/wallet-attempts/{attemptID}/release:
+    parameters:
+      - { $ref: '#/components/parameters/PurchaseID' }
+      - { in: path, name: attemptID, required: true, schema: { type: string, format: uuid } }
+    post:
+      summary: Release a wallet attempt that did not broadcast
+      operationId: releaseWalletAttempt
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      responses:
+        default: { $ref: '#/components/responses/Error' }
+        '204': { description: Attempt released }
+        '409': { $ref: '#/components/responses/Error' }
   /purchases/{purchaseID}/transactions:
     parameters: [ { $ref: '#/components/parameters/PurchaseID' } ]
     post:
@@ -296,6 +525,7 @@ paths:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/TransactionSubmission' } } }
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '202': { description: 'Candidate accepted, not verified', content: { application/json: { schema: { $ref: '#/components/schemas/Purchase' } } } }
         '400': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
@@ -306,9 +536,10 @@ paths:
     post:
       summary: Recheck candidate transaction and macro-block finality
       operationId: reconcilePurchase
-      description: Safe to retry; not-found and RPC outages remain uncertain and never authorize a second payment. Finalized evidence creates exactly one Pass in an atomic database transaction when the snapshotted package is still usable. If fixed expiry has passed, the verified receipt and COMPENSATION_REQUIRED case are committed instead, with no Pass and no second payment request.
+      description: Safe to retry; not-found and RPC outages remain uncertain and never authorize a second payment. Finalized evidence creates exactly one purchased Pass in an atomic database transaction when the snapshotted pass is still usable. If fixed expiry has passed, the verified receipt and COMPENSATION_REQUIRED case are committed instead, with no purchased Pass and no second payment request.
       parameters: [ { $ref: '#/components/parameters/Csrf' } ]
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '200': { description: Current authoritative payment/pass state, content: { application/json: { schema: { $ref: '#/components/schemas/Purchase' } } } }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -319,24 +550,137 @@ paths:
       operationId: cancelPurchase
       parameters: [ { $ref: '#/components/parameters/Csrf' } ]
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '200': { description: Cancelled intent, content: { application/json: { schema: { $ref: '#/components/schemas/Purchase' } } } }
         '409': { $ref: '#/components/responses/Error' }
+  /public/categories:
+    get:
+      summary: List canonical service category values
+      operationId: listCategories
+      security: []
+      responses:
+        default: { $ref: '#/components/responses/Error' }
+        '200': { description: Controlled taxonomy; empty unclassified value is excluded, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { type: string, enum: [fitness, tutoring, languages, coaching, wellness, music, beauty, consulting, mentoring] } } } } } } }
+  /public/providers/by-slug/{slug}:
+    get:
+      summary: Get a public provider by stable slug
+      operationId: getPublicProviderBySlug
+      security: []
+      parameters:
+        - { in: path, name: slug, required: true, schema: { $ref: '#/components/schemas/ProviderSlug' } }
+      responses:
+        default: { $ref: '#/components/responses/Error' }
+        '200': { description: Public verified provider. Owner wallet is included for the identicon; payout wallet and identity id are not., content: { application/json: { schema: { $ref: '#/components/schemas/PublicProvider' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /passes:
+    get:
+      summary: List the authenticated customer's own Passes
+      operationId: listPasses
+      description: Ordered by createdAt descending then ID descending. Uses immutable purchased snapshots. Expiry is evaluated server-side before status filtering. Use nextCursor with the same status filter; concurrent redemption may move a Pass between status groups. Invalid limits, cursors or status values return VALIDATION_ERROR.
+      parameters:
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { in: query, name: status, schema: { type: string, enum: ['', ACTIVE, COMPLETED, EXPIRED, CANCELLED] } }
+        - { in: query, name: cursor, schema: { type: string, maxLength: 256 }, description: Opaque nextCursor returned by the previous page. }
+      responses:
+        default: { $ref: '#/components/responses/Error' }
+        '200': { description: Own Pass page, content: { application/json: { schema: { $ref: '#/components/schemas/PurchasedPassPage' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
   /passes/{passID}:
     parameters: [ { $ref: '#/components/parameters/PassID' } ]
     get:
-      summary: Get own paid Pass; no redemption in Mission 03
+      summary: Get one purchased Pass, as its owner or its provider
       operationId: getPass
+      description: >-
+        Resolved for both parties to the Pass. `viewerRole` states which one is asking. An account that is
+        neither is answered 404, not a redacted record.
       responses:
-        '200': { description: Own Pass, content: { application/json: { schema: { $ref: '#/components/schemas/Pass' } } } }
+        default: { $ref: '#/components/responses/Error' }
+        '200': { description: Own Pass, content: { application/json: { schema: { $ref: '#/components/schemas/PurchasedPass' } } } }
         '404': { $ref: '#/components/responses/Error' }
+  /passes/{passID}/sessions:
+    parameters: [ { $ref: '#/components/parameters/PassID' } ]
+    get:
+      summary: List every session of one purchased Pass
+      operationId: listPassSessions
+      description: >-
+        Readable by both parties to the Pass — the owner and the provider whose catalogue it was bought from —
+        and by nobody else, which is a 404 rather than a filtered list. One row per session the Pass was sold
+        with, numbered 1..totalSessions and ordered by sequenceNumber. `role` states which party is asking.
+        `completedSessions` and `remainingSessions` are the Pass's own authoritative counters, written in the
+        same transaction as the session rows they agree with; they are never recomputed by the client.
+      responses:
+        default: { $ref: '#/components/responses/Error' }
+        '200': { description: The Pass and its sessions, content: { application/json: { schema: { $ref: '#/components/schemas/PassSessionList' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /pass-sessions/{sessionID}/schedule:
+    parameters: [ { $ref: '#/components/parameters/SessionID' } ]
+    patch:
+      summary: Set or clear one session's date
+      operationId: scheduleSession
+      description: >-
+        Either party may schedule. `scheduledAt: null` clears the date and returns the session to UNSCHEDULED;
+        omitting the field entirely is a VALIDATION_ERROR rather than a silent clear. Scheduling never moves a
+        counter — a date is not a delivery. Only an open (UNSCHEDULED or SCHEDULED) session on an ACTIVE Pass
+        may be scheduled; anything else is 409 CONFLICT.
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/SessionSchedule' } } }
+      responses:
+        default: { $ref: '#/components/responses/Error' }
+        '200': { description: Updated session, content: { application/json: { schema: { $ref: '#/components/schemas/PassSession' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /pass-sessions/{sessionID}/complete:
+    parameters: [ { $ref: '#/components/parameters/SessionID' } ]
+    post:
+      summary: Record that one session was delivered
+      operationId: completeSession
+      description: >-
+        Provider-only. The owner's route to spending a session is the wallet-signed redemption
+        (POST /redemption-challenges/{challengeID}/authorization), where the signature is the proof of intent;
+        an owner calling this is refused with 403 FORBIDDEN. Both routes end in the same transaction, so the
+        session record and the Pass counter can never disagree. Completing an already-completed session is
+        409 REDEMPTION_ALREADY_CONSUMED, including under concurrent requests — exactly one succeeds.
+        remainingSessions can never go negative.
+      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
+      responses:
+        default: { $ref: '#/components/responses/Error' }
+        '200': { description: The completed session and the Pass it belongs to, content: { application/json: { schema: { $ref: '#/components/schemas/SessionCompletion' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '410': { $ref: '#/components/responses/Error' }
+  /providers/{providerID}/purchased-passes:
+    parameters: [ { $ref: '#/components/parameters/ProviderID' } ]
+    get:
+      summary: List the Passes sold from one provider's catalogue
+      operationId: listProviderPurchasedPasses
+      description: >-
+        The provider's side of the same records the buyers see. Scoped to the authenticated provider account,
+        newest first. Another provider's customers are never visible.
+      parameters:
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        default: { $ref: '#/components/responses/Error' }
+        '200': { description: Sold Passes, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/PurchasedPass' } } } } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
   /passes/{passID}/redemption-challenges:
     parameters: [ { $ref: '#/components/parameters/PassID' } ]
     post:
-      summary: Create or rotate the current customer redemption challenge
+      summary: Create the current customer redemption challenge
       operationId: createRedemptionChallenge
-      description: Creates a five-minute, Pass/provider/customer-bound challenge. A fresh challenge contains the exact canonical message to sign. An authorized challenge may rotate its opaque NR1 reference; the previous reference is invalidated. Creating a challenge never consumes a session.
+      description: Creates a five-minute, Pass/provider/customer-bound challenge and returns the exact canonical message to sign. Repeating the call while one is live returns that same challenge. Creating a challenge never consumes a session.
       parameters: [ { $ref: '#/components/parameters/Csrf' } ]
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '200': { description: Current or newly created challenge, content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionChallenge' } } } }
         '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
@@ -350,6 +694,7 @@ paths:
       operationId: getCurrentRedemptionChallenge
       description: Returns the current challenge state without returning the bearer QR reference. Use POST to create or rotate a usable reference after authorization.
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '200': { description: Current challenge state, content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionChallenge' } } } }
         '404': { $ref: '#/components/responses/Error' }
   /passes/{passID}/redemptions:
@@ -358,6 +703,7 @@ paths:
       summary: List own Pass redemption history
       operationId: listPassRedemptions
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '200': { description: Customer-owned redemption history, content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionHistory' } } } }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
@@ -367,6 +713,7 @@ paths:
       summary: Get own redemption challenge state
       operationId: getRedemptionChallenge
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '200': { description: Customer-owned challenge, content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionChallenge' } } } }
         '404': { $ref: '#/components/responses/Error' }
   /redemption-challenges/{challengeID}/authorization:
@@ -374,13 +721,14 @@ paths:
     post:
       summary: Authorize a redemption challenge with the customer wallet
       operationId: authorizeRedemption
-      description: Verifies one fresh Nimiq Pay AUTHORIZE_REDEMPTION signature over the server-authored canonical message. Successful authorization creates no session effect; it only makes the short-lived NR1 reference usable by the bound provider.
+      description: 'Verifies one fresh Nimiq Pay AUTHORIZE_REDEMPTION signature over the server-authored canonical message and consumes exactly one session in the same transaction. The Pass owner''s signature is the sole authority: there is no second-party confirmation step. Expiry, Pass binding, Pass status and stale context are all re-checked under row locks before the session is spent, and a replayed authorization consumes nothing.'
       parameters: [ { $ref: '#/components/parameters/Csrf' } ]
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionAuthorization' } } }
       responses:
-        '200': { description: Authorized challenge with one opaque bearer reference, content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionChallenge' } } } }
+        default: { $ref: '#/components/responses/Error' }
+        '200': { description: Consumed challenge with the authoritative remaining count, content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionChallenge' } } } }
         '400': { $ref: '#/components/responses/Error' }
         '401': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
@@ -392,43 +740,10 @@ paths:
       summary: List redemption history for an owned Provider
       operationId: listProviderRedemptions
       responses:
+        default: { $ref: '#/components/responses/Error' }
         '200': { description: Provider-owned operational history, content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionHistory' } } } }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
-  /providers/{providerID}/redemptions/lookup:
-    parameters: [ { $ref: '#/components/parameters/ProviderID' } ]
-    post:
-      summary: Look up an authorized redemption without consuming it
-      operationId: lookupRedemption
-      description: Provider authentication and Provider ownership are required. This lookup validates the opaque reference, expiry, authorization, Pass binding and stale context, but never consumes a session or creates a Redemption.
-      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
-      requestBody:
-        required: true
-        content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionConfirmation' } } }
-      responses:
-        '200': { description: Safe redemption context for explicit provider confirmation, content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionLookup' } } } }
-        '400': { $ref: '#/components/responses/Error' }
-        '401': { $ref: '#/components/responses/Error' }
-        '404': { $ref: '#/components/responses/Error' }
-        '409': { $ref: '#/components/responses/Error' }
-        '410': { $ref: '#/components/responses/Error' }
-  /providers/{providerID}/redemptions/confirm:
-    parameters: [ { $ref: '#/components/parameters/ProviderID' } ]
-    post:
-      summary: Confirm an authorized customer redemption
-      operationId: confirmRedemption
-      description: 'Provider authentication is required. The opaque reference is not sufficient by itself: the backend also enforces Provider ownership, challenge authorization, challenge/pass binding, expiry, stale context and one-session atomic consumption.'
-      parameters: [ { $ref: '#/components/parameters/Csrf' } ]
-      requestBody:
-        required: true
-        content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionConfirmation' } } }
-      responses:
-        '200': { description: One consumed session and authoritative remaining count, content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionConfirmationResult' } } } }
-        '400': { $ref: '#/components/responses/Error' }
-        '403': { $ref: '#/components/responses/Error' }
-        '404': { $ref: '#/components/responses/Error' }
-        '409': { $ref: '#/components/responses/Error' }
-        '410': { $ref: '#/components/responses/Error' }
 components:
   securitySchemes:
     sessionCookie:
@@ -440,22 +755,23 @@ components:
     Csrf: { in: header, name: X-CSRF-Token, required: true, schema: { type: string, pattern: '^[0-9a-f]{64}$' } }
     ProviderID: { in: path, name: providerID, required: true, schema: { type: string, format: uuid } }
     ServiceID: { in: path, name: serviceID, required: true, schema: { type: string, format: uuid } }
-    PackageID: { in: path, name: packageID, required: true, schema: { type: string, format: uuid } }
     PurchaseID: { in: path, name: purchaseID, required: true, schema: { type: string, format: uuid } }
     PassID: { in: path, name: passID, required: true, schema: { type: string, format: uuid } }
+    MediaID: { in: path, name: mediaID, required: true, schema: { type: string, format: uuid } }
     ChallengeID: { in: path, name: challengeID, required: true, schema: { type: string, format: uuid } }
+    SessionID: { in: path, name: sessionID, required: true, schema: { type: string, format: uuid } }
     IdempotencyKey: { in: header, name: Idempotency-Key, required: false, schema: { type: string, minLength: 1, maxLength: 128 } }
   responses:
     Error:
-      description: Normalized error; codes include AUTH_REQUIRED, INVALID_SIGNATURE, CHALLENGE_EXPIRED, CHALLENGE_CONSUMED, FORBIDDEN, VALIDATION_ERROR, NOT_FOUND, CONFLICT, PAYMENT_CONFLICT, PACKAGE_PURCHASE_CUTOFF, INTENT_EXPIRED, PASS_NOT_FOUND, PASS_NOT_OWNED, PASS_EXPIRED, PASS_COMPLETED, REDEMPTION_CHALLENGE_EXPIRED, REDEMPTION_ALREADY_CONSUMED, REDEMPTION_NOT_AUTHORIZED, INVALID_REDEMPTION_SIGNATURE, STALE_REDEMPTION_CHALLENGE, INVALID_REDEMPTION_TOKEN, RATE_LIMITED, CSRF_INVALID, ORIGIN_FORBIDDEN.
+      description: Normalized error; codes include AUTH_REQUIRED, INVALID_SIGNATURE, CHALLENGE_EXPIRED, CHALLENGE_CONSUMED, FORBIDDEN, VALIDATION_ERROR, NOT_FOUND, CONFLICT, PAYMENT_CONFLICT, PASS_UNAVAILABLE, PASS_ALREADY_OWNED, PURCHASE_IN_SETTLEMENT, PASS_PURCHASE_CUTOFF, SELF_PURCHASE_NOT_ALLOWED, INTENT_EXPIRED, PASS_NOT_FOUND, PASS_NOT_OWNED, PASS_EXPIRED, PASS_COMPLETED, REDEMPTION_CHALLENGE_EXPIRED, REDEMPTION_ALREADY_CONSUMED, REDEMPTION_NOT_AUTHORIZED, INVALID_REDEMPTION_SIGNATURE, STALE_REDEMPTION_CHALLENGE, INVALID_REDEMPTION_TOKEN, RATE_LIMITED, CSRF_INVALID, ORIGIN_FORBIDDEN.
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
   schemas:
     CreatePurchase:
       type: object
       additionalProperties: false
-      required: [packageId]
+      required: [passId]
       properties:
-        packageId: { type: string, format: uuid }
+        passId: { type: string, format: uuid }
     TransactionSubmission:
       type: object
       additionalProperties: false
@@ -464,33 +780,80 @@ components:
         txHash: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
     PaymentRequest:
       type: object
-      required: [recipient, valueLuna, data, network, expiresAt]
+      required: [recipient, valueLuna, valueNim, data, network, expiresAt, uri]
       properties:
         recipient: { type: string, description: Verified payout wallet snapshotted when intent was created. }
         valueLuna: { type: integer, format: int64, minimum: 1, description: Exact integer business amount; SDK uses this as the value field. Network fee is separate. }
+        valueNim: { type: string, pattern: '^[0-9]+(\.[0-9]{1,5})?$', description: The same amount as exact decimal NIM text (valueLuna divided by 100000). Display and payment-link use only; valueLuna remains authoritative. }
         data: { type: string, pattern: '^NP1:[0-9a-f]{32}$', description: Exact UTF-8 transaction data; do not regenerate. }
         network: { type: string, enum: [TESTNET, MAINNET] }
         expiresAt: { type: string, format: date-time }
+        uri:
+          type: string
+          nullable: true
+          description: >-
+            Server-built Nimiq payment request for the desktop QR checkout, in the
+            official request-link encoding: nimiq:ADDRESS?amount=DECIMAL_NIM&message=NP1_REFERENCE.
+            The amount is decimal NIM, not Luna. Built from the intent snapshot so no
+            client can retarget recipient or amount; render it verbatim and never
+            recompose it. Null when the recipient could not be encoded. Scanning it is
+            not payment: settlement still requires server-side chain verification.
     Compensation:
       type: object
-      description: Finalized payment was received, but the fixed package expiration prevented Pass activation. Never request another payment. Manual provider/customer refund or reissue is required; no backend wallet custody or automatic refund exists.
+      description: >-
+        The receipt and the entitlement disagree and a human has to close the loop. Two reasons, mirror images
+        of each other. PASS_EXPIRED_BEFORE_ACTIVATION: the payment arrived and is real, but the fixed pass
+        expiration prevented activation — never request another payment, a manual refund or reissue is required.
+        PAYMENT_SETTLEMENT_REVERSED: the pass was issued on a validated micro-block inclusion that then failed to
+        become canonical, so the pass was withdrawn and nothing is owed in either direction — the customer may buy
+        again. No backend wallet custody or automatic refund exists in either case.
       required: [status, reason, createdAt, message, doNotPayAgain, automatedRefund]
       properties:
         status: { type: string, enum: [OPEN, RESOLVED] }
-        reason: { type: string, enum: [PACKAGE_EXPIRED_BEFORE_ACTIVATION] }
+        reason: { type: string, enum: [PASS_EXPIRED_BEFORE_ACTIVATION, PAYMENT_SETTLEMENT_REVERSED] }
         createdAt: { type: string, format: date-time }
         message: { type: string }
-        doNotPayAgain: { type: boolean, enum: [true] }
+        doNotPayAgain: { type: boolean, description: "True when real money arrived and a second payment would be lost. False for a reversed settlement, where no NIM ever left the wallet." }
         automatedRefund: { type: boolean, enum: [false] }
+    Settlement:
+      type: object
+      description: >-
+        How permanent the payment behind this purchase is, which is a different question from whether the purchase
+        completed. Under NIMIQ_CONFIRMATION_POLICY=inclusion a purchase reaches `completed` and its Pass exists as
+        soon as the transaction is in a canonical micro block and every economic check has passed — normally a
+        second or two — while the macro block that makes it irreversible is still up to a batch away. That interval
+        is what `provisional` describes. Clients should not gate Pass visibility on it (ADR-021).
+      required: [status, provisional, inclusionBlock, includedAt, expectedFinalityBlock, finalityBlock, finalizedAt, contestedAt, contestReason]
+      properties:
+        status:
+          type: string
+          enum: [INCLUDED, FINALIZED, CONTESTED]
+          description: >-
+            INCLUDED is accepted and fully validated, finality still being tracked. FINALIZED is irreversible.
+            CONTESTED means the transaction stopped being part of the canonical chain; the receipt is kept as
+            evidence and a compensation case is opened against it.
+        provisional: { type: boolean, description: Shorthand for status == INCLUDED. }
+        inclusionBlock: { type: integer, format: int64, description: The micro block the payment was accepted in. }
+        includedAt: { type: string, format: date-time, description: "That block's own timestamp, not a server clock reading." }
+        expectedFinalityBlock:
+          type: integer
+          format: int64
+          description: >-
+            The macro height that will finalise this inclusion. Known from acceptance because macro blocks sit at
+            fixed multiples of the batch length, and never a claim that the block has been produced.
+        finalityBlock: { type: integer, format: int64, nullable: true, description: The observed macro block. Null until FINALIZED. }
+        finalizedAt: { type: string, format: date-time, nullable: true, description: That macro block's timestamp. Null until FINALIZED. }
+        contestedAt: { type: string, format: date-time, nullable: true }
+        contestReason: { type: string, nullable: true }
     Purchase:
       type: object
-      required: [purchaseIntentId, status, purchaseStatus, packageId, packageTitle, serviceId, providerId, sessions, priceLuna, customerWallet, createdAt, expiresAt, transactionHash, broadcastObservedAt, paymentVerification, failureCategory, passId, paymentRequest, compensation]
+      required: [purchaseIntentId, status, purchaseStatus, passId, passTitle, serviceId, providerId, sessions, priceLuna, customerWallet, createdAt, expiresAt, transactionHash, broadcastObservedAt, paymentVerification, failureCategory, purchasedPassId, paymentRequest, compensation, settlement]
       properties:
         purchaseIntentId: { type: string, format: uuid }
         status: { type: string, enum: [awaiting_payment, transaction_submitted, verifying, awaiting_finality, uncertain_retryable, confirmed, pass_provisioning, completed, compensation_required, cancelled, expired, permanently_failed] }
         purchaseStatus: { type: string, enum: [CREATED, PAYMENT_PENDING, TRANSACTION_SUBMITTED, VERIFYING, AWAITING_FINALITY, CONFIRMED, COMPENSATION_REQUIRED, FAILED, CANCELLED, EXPIRED] }
-        packageId: { type: string, format: uuid }
-        packageTitle: { type: string }
+        passId: { type: string, format: uuid }
+        passTitle: { type: string }
         serviceId: { type: string, format: uuid }
         providerId: { type: string, format: uuid }
         sessions: { type: integer, format: int32 }
@@ -500,28 +863,86 @@ components:
         expiresAt: { type: string, format: date-time }
         transactionHash: { type: string, nullable: true }
         broadcastObservedAt: { type: string, format: date-time, nullable: true, description: Set only when backend saw the transaction in the Nimiq mempool before expiry. }
-        paymentVerification: { type: string, nullable: true, enum: [SUBMITTED, NOT_FOUND, UNCERTAIN, INCLUDED, AWAITING_FINALITY, MISMATCH, COMPENSATION_REQUIRED] }
+        paymentVerification: { type: string, nullable: true, enum: [SUBMITTED, NOT_FOUND, UNCERTAIN, INCLUDED, AWAITING_FINALITY, CONFIRMED, MISMATCH, COMPENSATION_REQUIRED, SETTLEMENT_REVERSED] }
         failureCategory: { type: string, nullable: true }
-        passId: { type: string, format: uuid, nullable: true }
+        purchasedPassId: { type: string, format: uuid, nullable: true }
         paymentRequest: { type: object, allOf: [ { $ref: '#/components/schemas/PaymentRequest' } ], nullable: true }
         compensation: { type: object, allOf: [ { $ref: '#/components/schemas/Compensation' } ], nullable: true }
-    Pass:
+        settlement: { type: object, allOf: [ { $ref: '#/components/schemas/Settlement' } ], nullable: true }
+    PurchasedPass:
       type: object
-      required: [id, purchaseId, ownerWallet, packageId, packageTitle, serviceId, providerId, originalSessions, usedSessions, remainingSessions, status, createdAt, expiresAt]
+      required: [id, purchaseId, ownerWallet, passId, passTitle, serviceId, providerId, originalSessions, usedSessions, remainingSessions, status, createdAt, expiresAt, serviceName, providerName, priceLuna, completedAt, viewerRole]
       properties:
+        serviceName: { type: string, description: Purchased service name snapshot. }
+        providerName: { type: string, description: Purchased provider display name snapshot. }
+        priceLuna: { type: integer, format: int64, description: Purchased price snapshot in integer Luna. }
+        completedAt: { type: string, format: date-time, nullable: true }
         id: { type: string, format: uuid }
         purchaseId: { type: string, format: uuid }
         ownerWallet: { type: string }
-        packageId: { type: string, format: uuid }
-        packageTitle: { type: string }
+        passId: { type: string, format: uuid }
+        passTitle: { type: string }
         serviceId: { type: string, format: uuid }
         providerId: { type: string, format: uuid }
         originalSessions: { type: integer, format: int32 }
         usedSessions: { type: integer, format: int32 }
         remainingSessions: { type: integer, format: int32 }
         status: { type: string, enum: [ACTIVE, COMPLETED, EXPIRED, CANCELLED] }
-        createdAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time, description: 'When the Pass was created, which is when its payment was fully verified and met the configured confirmation policy. Under NIMIQ_CONFIRMATION_POLICY=inclusion that is canonical micro-block inclusion, not macro finality; see Purchase.settlement.' }
         expiresAt: { type: string, format: date-time, nullable: true }
+        viewerRole:
+          type: string
+          enum: [OWNER, PROVIDER]
+          description: >-
+            What the authenticated account is to this Pass, decided server-side. The client must not derive it
+            from the wallet or provider id: deriving it is how a screen ends up offering a control the server refuses.
+    PassSessionStatus:
+      type: string
+      enum: [UNSCHEDULED, SCHEDULED, COMPLETED, CANCELLED]
+      description: >-
+        UNSCHEDULED has no date, SCHEDULED has one, and both are open. COMPLETED is the only status that spends
+        a session; it and CANCELLED are terminal. A completed session keeps whatever date it had.
+    PassSession:
+      type: object
+      required: [id, passId, sequenceNumber, status, scheduledAt, completedAt, completedBy, redemptionId, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        passId: { type: string, format: uuid, description: The purchased Pass this session belongs to. }
+        sequenceNumber: { type: integer, format: int32, minimum: 1, description: '1-based position, fixed at purchase and never renumbered.' }
+        status: { $ref: '#/components/schemas/PassSessionStatus' }
+        scheduledAt: { type: string, format: date-time, nullable: true }
+        completedAt: { type: string, format: date-time, nullable: true }
+        completedBy: { type: string, enum: [OWNER, PROVIDER], nullable: true, description: Who recorded the delivery. OWNER means a wallet-signed redemption spent it. }
+        redemptionId: { type: string, format: uuid, nullable: true, description: 'The signed redemption that spent this session, when there was one.' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    PassSessionList:
+      type: object
+      required: [passId, role, pass, items, totalSessions, completedSessions, remainingSessions]
+      properties:
+        passId: { type: string, format: uuid }
+        role: { type: string, enum: [OWNER, PROVIDER] }
+        pass: { $ref: '#/components/schemas/PurchasedPass' }
+        items: { type: array, items: { $ref: '#/components/schemas/PassSession' } }
+        totalSessions: { type: integer, format: int32 }
+        completedSessions: { type: integer, format: int32 }
+        remainingSessions: { type: integer, format: int32 }
+    SessionSchedule:
+      type: object
+      additionalProperties: false
+      required: [scheduledAt]
+      properties:
+        scheduledAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: RFC 3339 timestamp, or null to clear the date. Required so that an absent field is an error rather than a silent unschedule.
+    SessionCompletion:
+      type: object
+      required: [session, pass]
+      properties:
+        session: { $ref: '#/components/schemas/PassSession' }
+        pass: { $ref: '#/components/schemas/PurchasedPass' }
     ChallengeInput:
       type: object
       additionalProperties: false
@@ -543,34 +964,10 @@ components:
       properties:
         publicKey: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
         signature: { type: string, pattern: '^[0-9a-fA-F]{128}$' }
-    RedemptionConfirmation:
-      type: object
-      additionalProperties: false
-      required: [redemptionReference]
-      properties:
-        redemptionReference: { type: string, pattern: '^NR1:[0-9a-f]{64}$', description: Opaque short-lived bearer reference returned only after customer signature authorization. }
-    RedemptionLookup:
-      type: object
-      additionalProperties: false
-      required: [challengeId, passId, providerId, serviceName, packageTitle, challengeStatus, authorizationStatus, passStatus, usedSessions, remainingSessions, nextSessionOrdinal, passExpiresAt, challengeExpiresAt, referenceExpiresAt]
-      properties:
-        challengeId: { type: string, format: uuid }
-        passId: { type: string, format: uuid }
-        providerId: { type: string, format: uuid }
-        serviceName: { type: string }
-        packageTitle: { type: string }
-        challengeStatus: { type: string, enum: [AUTHORIZED] }
-        authorizationStatus: { type: string, enum: [AUTHORIZED] }
-        passStatus: { type: string, enum: [ACTIVE] }
-        usedSessions: { type: integer, minimum: 0 }
-        remainingSessions: { type: integer, minimum: 1 }
-        nextSessionOrdinal: { type: integer, minimum: 1 }
-        passExpiresAt: { type: string, format: date-time, nullable: true }
-        challengeExpiresAt: { type: string, format: date-time }
-        referenceExpiresAt: { type: string, format: date-time, nullable: true }
+        signingScheme: { $ref: '#/components/schemas/SigningScheme' }
     RedemptionChallenge:
       type: object
-      required: [challengeId, passId, providerId, purpose, status, message, createdAt, expiresAt, authorizedAt, consumedAt, pass, redemption, redemptionReference, qrExpiresAt]
+      required: [challengeId, passId, providerId, purpose, status, message, createdAt, expiresAt, authorizedAt, consumedAt, pass, redemption, session]
       properties:
         challengeId: { type: string, format: uuid }
         passId: { type: string, format: uuid }
@@ -584,8 +981,11 @@ components:
         consumedAt: { type: string, format: date-time, nullable: true }
         pass: { type: object, required: [status, originalSessions, usedSessions, remainingSessions, expiresAt], properties: { status: { type: string, enum: [ACTIVE, COMPLETED, EXPIRED, CANCELLED] }, originalSessions: { type: integer }, usedSessions: { type: integer }, remainingSessions: { type: integer }, expiresAt: { type: string, format: date-time, nullable: true } } }
         redemption: { type: object, nullable: true, properties: { id: { type: string, format: uuid }, sessionOrdinal: { type: integer }, redeemedAt: { type: string, format: date-time } } }
-        redemptionReference: { type: string, pattern: '^NR1:[0-9a-f]{64}$', nullable: true, description: Present only in the authorization response or challenge rotation response. }
-        qrExpiresAt: { type: string, format: date-time, nullable: true }
+        session:
+          type: object
+          nullable: true
+          allOf: [ { $ref: '#/components/schemas/PassSession' } ]
+          description: The Pass session this authorization spent. Present only on a successful authorization, so the screen can name which session moved rather than only that the count changed.
     RedemptionHistory:
       type: object
       required: [items]
@@ -593,49 +993,51 @@ components:
         items: { type: array, items: { $ref: '#/components/schemas/RedemptionHistoryItem' } }
     RedemptionHistoryItem:
       type: object
-      required: [redemptionId, challengeId, passId, providerId, serviceId, packageId, sessionOrdinal, ownerWallet, redeemedAt, status]
+      required: [redemptionId, challengeId, passId, providerId, serviceId, sourcePassId, sessionOrdinal, ownerWallet, redeemedAt, status]
       properties:
         redemptionId: { type: string, format: uuid }
         challengeId: { type: string, format: uuid }
         passId: { type: string, format: uuid }
         providerId: { type: string, format: uuid }
         serviceId: { type: string, format: uuid }
-        packageId: { type: string, format: uuid }
+        sourcePassId: { type: string, format: uuid }
         sessionOrdinal: { type: integer, minimum: 1 }
         ownerWallet: { type: string }
         redeemedAt: { type: string, format: date-time }
         status: { type: string, enum: [CONSUMED] }
-    RedemptionConfirmationResult:
-      type: object
-      required: [redemptionId, passId, redeemedAt, usedSessions, remainingSessions, passStatus, completed]
-      properties:
-        redemptionId: { type: string, format: uuid }
-        passId: { type: string, format: uuid }
-        redeemedAt: { type: string, format: date-time }
-        usedSessions: { type: integer }
-        remainingSessions: { type: integer }
-        passStatus: { type: string, enum: [ACTIVE, COMPLETED, EXPIRED, CANCELLED] }
-        completed: { type: boolean }
+    SigningScheme:
+      type: string
+      enum: [raw, hub]
+      description: >-
+        Which documented preprocessing the wallet applied before signing.
+        Omit it to verify under the deployment's configured NIMIQ_SIGNING_SCHEME.
+        Send "hub" for a signature produced by @nimiq/hub-api signMessage(),
+        whose envelope is specified as sha256("\x16Nimiq Signed Message:\n" +
+        length + message). The Nimiq Pay Mini App provider does not document its
+        preprocessing, so that transport sends nothing. Exactly one scheme is
+        applied per proof; the server never retries under another.
     Proof:
       type: object
       additionalProperties: false
       required: [challengeId, wallet, publicKey, signature]
       properties:
         challengeId: { type: string, format: uuid }
-        wallet: { type: string }
+        wallet: { type: string, description: Nimiq NQ address; spaces accepted }
         publicKey: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
         signature: { type: string, pattern: '^[0-9a-fA-F]{128}$' }
+        signingScheme: { $ref: '#/components/schemas/SigningScheme' }
     PayoutProof:
       type: object
       additionalProperties: false
       required: [challengeId, wallet, publicKey, signature, ownerPublicKey, ownerSignature]
       properties:
         challengeId: { type: string, format: uuid }
-        wallet: { type: string }
+        wallet: { type: string, description: Nimiq NQ address; spaces accepted }
         publicKey: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
         signature: { type: string, pattern: '^[0-9a-fA-F]{128}$' }
         ownerPublicKey: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
         ownerSignature: { type: string, pattern: '^[0-9a-fA-F]{128}$' }
+        signingScheme: { $ref: '#/components/schemas/SigningScheme' }
     Identity:
       type: object
       required: [id, wallet, createdAt]
@@ -650,17 +1052,47 @@ components:
         identity: { $ref: '#/components/schemas/Identity' }
         expiresAt: { type: string, format: date-time }
         csrfToken: { type: string, pattern: '^[0-9a-f]{64}$' }
+    ProviderSlug:
+      type: string
+      minLength: 3
+      maxLength: 80
+      pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+      description: Trimmed and lowercased ASCII slug. UUIDs and reserved route names are rejected. Assigned once at creation; changing name never changes the slug. If omitted, a readable name prefix plus UUID suffix is generated. Duplicate custom slugs return CONFLICT.
+    Category:
+      type: string
+      enum: ['', fitness, tutoring, languages, coaching, wellness, music, beauty, consulting, mentoring]
+      description: Empty means unclassified. Stored on the Service and inherited by its current public Passes. Existing data is not classified by inference.
+    PurchasedPassPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/PurchasedPass' } }
+        nextCursor: { type: string, nullable: true }
     ProviderInput:
       type: object
       additionalProperties: false
       required: [name]
-      properties: { name: { type: string, minLength: 1, maxLength: 160 } }
+      description: Name is the public display name. Optional profile fields preserve existing values when omitted or null; empty string clears them. Slug is immutable after creation. Text fields are plain text; lengths are UTF-8 byte limits. Avatar is an external HTTPS reference; the backend neither fetches nor uploads the media.
+      properties:
+        name: { type: string, minLength: 1, maxLength: 160 }
+        slug: { type: string, nullable: true, description: Optional custom slug; normalized using ProviderSlug rules. Omitted or null generates a slug on creation and preserves it on edit; empty is invalid. }
+        headline: { type: string, maxLength: 160, nullable: true }
+        bio: { type: string, maxLength: 2000, nullable: true }
+        avatarUrl: { type: string, maxLength: 2048, nullable: true, description: Empty or HTTPS URL without credentials or fragment. }
+        avatarVariant: { type: integer, minimum: 0, maximum: 255, nullable: true, description: Which Nimiq identicon of the owner wallet to show. 0 is the wallet's own identicon; a higher number selects another face derived from the same address. Omitted or null preserves the current choice. }
+        location: { type: string, maxLength: 160, nullable: true }
     Provider:
       type: object
-      required: [id, name, payoutWallet, payoutVerifiedAt, createdAt, updatedAt]
+      required: [id, name, slug, headline, bio, avatarUrl, avatarVariant, location, payoutWallet, payoutVerifiedAt, createdAt, updatedAt]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
+        slug: { $ref: '#/components/schemas/ProviderSlug' }
+        headline: { type: string }
+        bio: { type: string }
+        avatarUrl: { type: string }
+        avatarVariant: { type: integer, minimum: 0, maximum: 255 }
+        location: { type: string }
         payoutWallet: { type: string, nullable: true }
         payoutVerifiedAt: { type: string, format: date-time, nullable: true }
         createdAt: { type: string, format: date-time }
@@ -670,20 +1102,24 @@ components:
       additionalProperties: false
       required: [name]
       properties:
+        category: { type: string, nullable: true, enum: ['', null, fitness, tutoring, languages, coaching, wellness, music, beauty, consulting, mentoring] }
         name: { type: string, minLength: 1, maxLength: 160 }
         description: { type: string, maxLength: 2000 }
     ServiceUpdate:
       type: object
       additionalProperties: false
+      description: Omitted or null category preserves the existing category; empty string clears it.
       required: [name, status]
       properties:
+        category: { type: string, nullable: true, enum: ['', null, fitness, tutoring, languages, coaching, wellness, music, beauty, consulting, mentoring] }
         name: { type: string, minLength: 1, maxLength: 160 }
         description: { type: string, maxLength: 2000 }
         status: { type: string, enum: [DRAFT, ACTIVE, ARCHIVED] }
     Service:
       type: object
-      required: [id, providerId, name, description, status, createdAt, updatedAt]
+      required: [id, providerId, name, description, category, status, createdAt, updatedAt]
       properties:
+        category: { $ref: '#/components/schemas/Category' }
         id: { type: string, format: uuid }
         providerId: { type: string, format: uuid }
         name: { type: string }
@@ -691,19 +1127,21 @@ components:
         status: { type: string, enum: [DRAFT, ACTIVE, ARCHIVED] }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
-    PackageInput:
+    PassInput:
       type: object
       additionalProperties: false
       required: [title, sessions, priceLuna]
       properties:
         title: { type: string, minLength: 1, maxLength: 160 }
         description: { type: string, maxLength: 2000 }
-        sessions: { type: integer, format: int32, minimum: 1 }
+        sessions: { type: integer, format: int32, minimum: 1, maximum: 500 }
         priceLuna: { type: integer, format: int64, minimum: 1, description: Integer Luna only; floating-point NIM forbidden. }
         expirationAt: { type: string, format: date-time, nullable: true, description: Optional fixed UTC expiration instant. }
-    Package:
+        accent: { type: string, nullable: true, enum: ['', null, PINE, SLATE, CLAY, OLIVE, PLUM, AMBER], description: Optional visual identity for pass details. Empty falls back to a derived tone. }
+        coverMediaId: { type: string, format: uuid, nullable: true, description: ID of a cover previously uploaded to POST /media. Null clears the cover. }
+    Pass:
       type: object
-      required: [id, providerId, serviceId, title, description, sessions, priceLuna, currency, expirationAt, status, createdAt, updatedAt]
+      required: [id, providerId, serviceId, title, description, sessions, priceLuna, currency, expirationAt, coverMediaId, coverUrl, status, createdAt, updatedAt]
       properties:
         id: { type: string, format: uuid }
         providerId: { type: string, format: uuid }
@@ -714,25 +1152,56 @@ components:
         priceLuna: { type: integer, format: int64 }
         currency: { type: string, enum: [NIM] }
         expirationAt: { type: string, format: date-time, nullable: true }
+        accent: { type: string, nullable: true, enum: [null, PINE, SLATE, CLAY, OLIVE, PLUM, AMBER] }
+        coverMediaId: { type: string, format: uuid, nullable: true }
+        coverUrl: { type: string, nullable: true, description: 'Relative path /api/v1/media/{id} on this API, or null.' }
         status: { type: string, enum: [DRAFT, ACTIVE, UNAVAILABLE, ARCHIVED] }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+    Media:
+      type: object
+      additionalProperties: false
+      required: [id, kind, contentType, byteSize, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [pass_cover] }
+        contentType: { type: string, enum: [image/jpeg] }
+        byteSize: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
     PublicProvider:
       type: object
-      required: [id, name]
-      properties: { id: { type: string, format: uuid }, name: { type: string } }
-    PublicService:
-      type: object
-      required: [id, name, description]
+      additionalProperties: false
+      required: [id, name, slug, headline, bio, avatarUrl, avatarVariant, location, wallet]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
-        description: { type: string }
-    PublicOffer:
+        slug: { $ref: '#/components/schemas/ProviderSlug' }
+        headline: { type: string }
+        bio: { type: string }
+        avatarUrl: { type: string }
+        avatarVariant: { type: integer, minimum: 0, maximum: 255, description: Which identicon of `wallet` to draw. 0 is the wallet's own. }
+        location: { type: string }
+        wallet: { type: string, description: Owner identity Nimiq address used to render the official identicon. Not the payout wallet. }
+    PublicProviderSummary:
       type: object
-      required: [package, provider, service]
+      additionalProperties: false
+      required: [provider, passCount]
       properties:
-        package: { $ref: '#/components/schemas/Package' }
+        provider: { $ref: '#/components/schemas/PublicProvider' }
+        passCount: { type: integer, minimum: 1, description: 'How many passes this provider currently has on sale, counted server-side from the same rows the directory is selected by.' }
+    PublicService:
+      type: object
+      required: [id, name, description, category]
+      properties:
+        category: { $ref: '#/components/schemas/Category' }
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+    PublicPass:
+      type: object
+      required: [pass, provider, service]
+      properties:
+        pass: { $ref: '#/components/schemas/Pass' }
         provider: { $ref: '#/components/schemas/PublicProvider' }
         service: { $ref: '#/components/schemas/PublicService' }
     Error:

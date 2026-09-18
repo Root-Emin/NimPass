@@ -27,9 +27,76 @@ var (
 	ErrInvalidSignature = errors.New("invalid signature")
 	ErrForbidden        = errors.New("forbidden")
 	ErrConflict         = errors.New("conflict")
-	ErrPurchaseCutoff   = errors.New("package purchase cutoff reached")
-	ErrTooManyAttempts  = errors.New("too many attempts")
-	ErrValidation       = errors.New("validation failed")
+	ErrPurchaseCutoff   = errors.New("pass purchase cutoff reached")
+	// ErrSelfPurchase refuses a provider buying their own product.
+	//
+	// Decided at the repository, against `providers.owner_identity_id` read
+	// under the same lock as the price and the payout wallet — not against
+	// anything the client sent, and not only in the browser. A crafted
+	// POST /purchases is refused exactly as a tapped Buy button is.
+	ErrSelfPurchase = errors.New("a provider cannot purchase their own pass")
+	// ErrPassUnavailable refuses a purchase of a Pass that is not on sale —
+	// withdrawn from the listing, never published, or archived.
+	//
+	// It wraps ErrConflict rather than replacing it. The HTTP answer has always
+	// been 409 and stays 409; what this adds is the ability to say *which* 409,
+	// so the customer reads "no longer available for purchase" instead of a
+	// generic payment-state conflict. Every existing `errors.Is(err,
+	// ErrConflict)` caller keeps matching.
+	//
+	// The case it exists for is the stale tab: the Pass was on Discover when the
+	// page rendered, the provider withdrew it, and Buy is pressed against a
+	// screen that is no longer true. The intent is refused here, before any
+	// money can move (docs/09-SECURITY.md §11, §37).
+	ErrPassUnavailable = fmt.Errorf("%w: pass is not available for purchase", ErrConflict)
+	// ErrPassAlreadyOwned refuses a second purchase of a Pass the customer is
+	// still holding.
+	//
+	// `01-PRODUCT.md §56` and `02-USER-FLOWS.md §70` describe repurchase as the
+	// end of the loop — Purchase → Consume → Complete → Repurchase — and Buy
+	// Again as the control that starts it. Nothing in that loop asks for two
+	// live passes for the same Pass at once, and a customer who ends up with
+	// two has paid twice for one entitlement: the sessions do not merge, the
+	// pass screen shows one of them, and the second is money spent on a record
+	// they did not mean to create.
+	//
+	// So the refusal is scoped to exactly that: an ACTIVE pass with sessions
+	// left on it and its expiration still ahead. A completed pass (`Buy Again`),
+	// an expired one and a cancelled one all leave the customer free to buy
+	// again, on the current terms, which is the documented behaviour and is not
+	// changed by this.
+	//
+	// It wraps ErrConflict like ErrPassUnavailable does, so every existing
+	// `errors.Is(err, ErrConflict)` caller keeps matching and the HTTP answer
+	// stays 409 — what it adds is the ability to say which 409 it is.
+	ErrPassAlreadyOwned = fmt.Errorf("%w: this pass is already owned", ErrConflict)
+	// ErrPurchaseInSettlement refuses a new intent while the customer's last
+	// one for the same Pass can still be paid.
+	//
+	// An intent is payable for longer than it is current. Its 30-minute TTL is
+	// when the customer is asked to have paid; `PurchaseSettlementGrace` is how
+	// much longer the backend keeps accepting the answer — `Submit` takes a
+	// hash inside it, `DueDiscoveryAddresses` keeps sweeping the payout address
+	// inside it, and `validateEvidence` allows a report inside it. All three
+	// exist so a QR payment made in time but noticed late settles rather than
+	// failing with the money already moved.
+	//
+	// The reuse predicate in `Create` used the shorter clock, so for those five
+	// minutes a customer could hold one intent that could still buy the Pass
+	// and be issued a second one that also could. Paying both is two payments
+	// for one entitlement, and both settle: the guards against a double
+	// purchase are per intent, and these are two.
+	//
+	// So the blocking window is now the payable window, exactly. It refuses
+	// rather than reusing because an expired intent cannot start a payment —
+	// `BeginWalletAttempt` requires `now < expires_at` — and handing one back
+	// would give the customer a checkout that silently does nothing.
+	//
+	// It clears by itself. Once the grace is over the old intent can settle
+	// nothing, and the next request creates a new one.
+	ErrPurchaseInSettlement = fmt.Errorf("%w: a previous attempt for this pass is still settling", ErrConflict)
+	ErrTooManyAttempts      = errors.New("too many attempts")
+	ErrValidation           = errors.New("validation failed")
 )
 
 type Challenge struct {
@@ -82,6 +149,13 @@ type Auth struct {
 	Network     string
 	Environment string
 	Now         func() time.Time
+	// OnProofMismatch observes a signature this deployment rejected, so a
+	// development build can capture the proof material a real wallet produced.
+	// It is nil outside development, it is called only after verification has
+	// already failed, and its return value is ignored: it cannot admit a proof,
+	// change the scheme in force, or keep a challenge alive. Verification stays
+	// exactly one preprocessor per proof (see nimiq.Ed25519Verifier.VerifyAs).
+	OnProofMismatch func(message string, p Proof)
 }
 
 func (a Auth) NewChallenge(ctx context.Context, purpose, wallet string, providerID domain.ID) (Challenge, error) {
@@ -109,10 +183,15 @@ func (a Auth) NewChallenge(ctx context.Context, purpose, wallet string, provider
 }
 
 type Proof struct {
-	ChallengeID    domain.ID
-	Wallet         string
-	PublicKey      string
-	Signature      string
+	ChallengeID domain.ID
+	Wallet      string
+	PublicKey   string
+	Signature   string
+	// SigningScheme names the documented preprocessing the wallet applied
+	// before signing, or is empty to use the deployment's configured scheme.
+	// See nimiq.Ed25519Verifier.VerifyAs for why a proof carries this and why
+	// it cannot widen what a signature authorises.
+	SigningScheme  string
 	OwnerPublicKey string
 	OwnerSignature string
 }
@@ -136,10 +215,25 @@ func (a Auth) validateProof(ctx context.Context, p Proof, purpose string, provid
 	}
 	wallet, err := nimiq.ValidateAddress(p.Wallet)
 	if err != nil || wallet != c.Wallet {
+		// Same rejection, different cause: the proof names a wallet the
+		// challenge was not issued to. It reaches the observer too, so a
+		// capture can tell a wrong wallet apart from a wrong scheme instead of
+		// leaving both as one opaque "invalid signature".
+		if a.OnProofMismatch != nil {
+			a.OnProofMismatch(c.Message(), p)
+		}
 		_ = a.Store.RecordChallengeFailure(ctx, c.ID)
 		return Challenge{}, ErrInvalidSignature
 	}
-	if err := a.Verifier.Verify(c.Message(), c.Wallet, p.PublicKey, p.Signature); err != nil {
+	if err := a.Verifier.VerifyAs(p.SigningScheme, c.Message(), c.Wallet, p.PublicKey, p.Signature); err != nil {
+		// A rejected signature is the only symptom a wallet whose preprocessing
+		// we have not settled can produce, and the proof material is gone the
+		// moment this returns. Hand it to the development-only observer first
+		// so cmd/verify-sign-fixture can name the scheme offline. The proof is
+		// still rejected: nothing below this line depends on the observer.
+		if a.OnProofMismatch != nil {
+			a.OnProofMismatch(c.Message(), p)
+		}
 		_ = a.Store.RecordChallengeFailure(ctx, c.ID)
 		return Challenge{}, ErrInvalidSignature
 	}
@@ -177,7 +271,9 @@ func (a Auth) VerifyPayout(ctx context.Context, actor Identity, providerID domai
 	}
 	// A stolen session plus the attacker's payout-wallet signature must not be
 	// enough to redirect payments. Require a fresh signature by the login wallet.
-	if err := a.Verifier.Verify(c.Message(), actor.Wallet, p.OwnerPublicKey, p.OwnerSignature); err != nil {
+	// Both proofs come from the same wallet transport in one ceremony, so the
+	// scheme the request named applies to both.
+	if err := a.Verifier.VerifyAs(p.SigningScheme, c.Message(), actor.Wallet, p.OwnerPublicKey, p.OwnerSignature); err != nil {
 		_ = a.Store.RecordChallengeFailure(ctx, c.ID)
 		return ErrInvalidSignature
 	}

@@ -28,6 +28,27 @@ export function useMyPurchases() {
 }
 
 /**
+ * One purchase, by id.
+ *
+ * `Pass.purchaseId` is the link between an entitlement and what was paid for
+ * it, and the price lives only on the purchase — a `Pass` carries no amount.
+ * Reading it is how Pass Detail can say "120 NIM" without guessing from a
+ * pass that may have been re-priced since (docs/08-ARCHITECTURE.md §41).
+ *
+ * Optional by design: if this read fails, the pass is still complete and the
+ * paid figure is simply not shown.
+ */
+export function usePurchase(id: string | undefined) {
+  const { session } = useSession()
+
+  return useQuery({
+    queryKey: queryKeys.purchases.detail(id ?? ''),
+    queryFn: ({ signal }) => purchasesApi.getPurchase(id as string, signal),
+    enabled: Boolean(session && id),
+  })
+}
+
+/**
  * Purchases the customer may still need to act on, or be told about.
  *
  * Deliberately narrow. A confirmed purchase is represented by its pass, a

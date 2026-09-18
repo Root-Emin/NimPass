@@ -12,15 +12,17 @@
 
 **Nimpass is a web-first, responsive digital session pass platform for recurring service businesses, deeply integrated with Nimiq and Nimiq Pay.**
 
-It allows independent service providers to create and sell prepaid multi-session packages and allows customers to purchase those packages using NIM.
+It allows independent service providers to create and sell prepaid multi-session Passes and allows customers to purchase those Passes using NIM.
 
-After a successful purchase, the customer receives a digital pass associated with their identity and wallet context.
+A Pass is the product itself: a titled offer such as `10 Guitar Lessons` with a session count, a NIM price, a category, and a draft or published state. The provider creates the Pass and publishes it to Discover.
 
-The pass keeps track of:
+After a successful purchase, the customer receives their own copy of that Pass — the same offer, with independent session progress.
+
+The purchased Pass keeps track of:
 
 * the purchased service,
 * the service provider,
-* the package that was purchased,
+* the Pass that was bought,
 * the original number of sessions,
 * the number of sessions already used,
 * the number of sessions remaining,
@@ -28,17 +30,17 @@ The pass keeps track of:
 * the pass state,
 * the session usage history.
 
-Each time the customer attends a real-world or online session, one session can be securely redeemed from the pass.
+Each time the customer attends a real-world or online session, one session can be securely redeemed from the Pass.
 
 After a successful redemption, the remaining session count decreases by exactly one.
 
-The customer continues using the same pass until all included sessions have been consumed.
+The customer continues using the same purchased Pass until all included sessions have been consumed.
 
-When the remaining session count reaches zero, the pass becomes completed and the customer may purchase another package.
+When the remaining session count reaches zero, the Pass becomes completed and the customer may buy that Pass again, on current terms, or another Pass.
 
 Nimpass therefore combines:
 
-**service discovery + package sales + NIM payments + wallet identity + digital pass ownership + session tracking + secure session redemption + repeat usage**
+**service discovery + pass sales + NIM payments + wallet identity + digital pass ownership + session tracking + secure session redemption + repeat usage**
 
 into one coherent web application.
 
@@ -100,7 +102,7 @@ However, neither mobile nor the Nimiq Pay container should dictate the entire pr
 
 # 3. One-Sentence Product Definition
 
-> **Nimpass lets service providers sell prepaid multi-session packages in NIM and lets customers own, track, and securely redeem those sessions through a digital pass.**
+> **Nimpass lets service providers create and sell prepaid multi-session Passes in NIM and lets customers own, track, and securely redeem those sessions.**
 
 This sentence should be treated as the canonical short definition of the product.
 
@@ -111,11 +113,11 @@ This sentence should be treated as the canonical short definition of the product
 Nimpass can be understood as:
 
 ```text
-Service Package
+Pass
 +
 NIM Payment
 +
-Digital Pass
+Owned sessions
 +
 Remaining Session Tracking
 +
@@ -158,7 +160,7 @@ Examples include:
 * beauty and wellness services,
 * other session-based professional services.
 
-These professionals frequently sell packages such as:
+These professionals frequently sell Passes such as:
 
 * 4 sessions,
 * 5 sessions,
@@ -182,7 +184,7 @@ The provider and customer now need to know:
 * how many have already been used,
 * how many remain,
 * when each session was used,
-* whether the customer really owns the package,
+* whether the customer really owns the Pass,
 * whether the pass is active,
 * whether the pass has expired,
 * whether a specific session was already redeemed.
@@ -218,7 +220,7 @@ A customer may not know how many sessions remain.
 
 Payment history and service usage usually live in different systems.
 
-Nimpass solves this by transforming a prepaid service package into a persistent digital pass.
+Nimpass solves this by transforming a prepaid service Pass into a persistent digital pass.
 
 ---
 
@@ -232,7 +234,7 @@ Example:
 Personal Training
 ```
 
-The provider then creates a package for that service.
+The provider then creates a Pass for that service.
 
 Example:
 
@@ -249,7 +251,7 @@ Price:
 250 NIM
 ```
 
-A customer opens the package through Nimpass.
+A customer opens the Pass through Nimpass.
 
 The customer understands:
 
@@ -259,7 +261,7 @@ The customer understands:
 * how much it costs,
 * what happens after purchase.
 
-The customer purchases the package using NIM.
+The customer purchases the Pass using NIM.
 
 After the payment is successfully confirmed, Nimpass creates a customer-specific digital pass.
 
@@ -277,7 +279,7 @@ Alex Fitness
 
 The pass remains accessible throughout its lifecycle.
 
-When the customer attends another session, the provider and customer participate in a secure redemption process.
+When the customer attends another session, they use one from their own pass and confirm it in their wallet (`DECISIONS.md` ADR-007).
 
 Example:
 
@@ -306,9 +308,9 @@ The core Nimpass product loop is:
 ```text
 Discover Service
         ↓
-View Provider / Package
+View Provider / Pass
         ↓
-Purchase Package
+Purchase Pass
         ↓
 Pay with NIM
         ↓
@@ -435,7 +437,7 @@ For example, desktop experiences may use:
 
 * side navigation,
 * multi-column layouts,
-* package grids,
+* Pass grids,
 * management tables,
 * contextual side panels,
 * richer dashboards,
@@ -503,17 +505,14 @@ Examples include:
 The provider needs a simple way to:
 
 * create services,
-* create packages,
-* define package prices,
+* create Passes,
+* define Pass prices,
 * define session quantities,
-* publish packages,
-* share packages,
+* publish Passes,
+* share Passes,
 * receive NIM payments,
 * see purchased passes,
 * see active passes,
-* validate customers,
-* redeem sessions,
-* prevent duplicate redemption,
 * see remaining session counts,
 * inspect relevant history,
 * manage completed passes.
@@ -522,11 +521,11 @@ The provider needs a simple way to:
 
 ## 11.2 Customers
 
-A customer purchases and consumes a provider's service package.
+A customer purchases and consumes a provider's service Pass.
 
 The customer needs to:
 
-* understand the package,
+* understand the Pass,
 * understand the provider,
 * know how many sessions are included,
 * understand the price,
@@ -537,7 +536,7 @@ The customer needs to:
 * review previous usage,
 * securely redeem sessions,
 * understand the pass state,
-* purchase another package when needed.
+* purchase another Pass when needed.
 
 The customer experience must be simpler than manually maintaining this information.
 
@@ -550,7 +549,7 @@ Providers and customers may use Nimpass differently.
 A provider may frequently operate Nimpass from a desktop or laptop while managing:
 
 * services,
-* packages,
+* Passes,
 * customers,
 * active passes,
 * history,
@@ -580,13 +579,13 @@ The Nimpass model must remain generic enough to support multiple session-based i
 Service:
 Personal Training
 
-Package:
+Pass:
 10 Sessions
 
 Price:
 250 NIM
 
-Customer purchases package.
+Customer purchases Pass.
 
 After session #1:
 9 sessions remain.
@@ -606,7 +605,7 @@ Pass completed.
 Service:
 Mathematics Tutoring
 
-Package:
+Pass:
 8 Lessons
 
 Price:
@@ -626,7 +625,7 @@ how many lessons remain.
 Service:
 Private English Lessons
 
-Package:
+Pass:
 12 Lessons
 
 Price:
@@ -647,7 +646,7 @@ After three lessons:
 Service:
 Career Coaching
 
-Package:
+Pass:
 5 Sessions
 
 Price:
@@ -665,7 +664,7 @@ across all five sessions.
 
 The Digital Pass is the central product object in Nimpass.
 
-It represents the customer's entitlement to consume a predefined number of sessions from a specific purchased package.
+It represents the customer's entitlement to consume a predefined number of sessions from a specific purchased Pass.
 
 Conceptually:
 
@@ -674,7 +673,7 @@ Pass
 │
 ├── Provider
 ├── Service
-├── Package
+├── Pass
 ├── Owner
 ├── Original session count
 ├── Used session count
@@ -762,13 +761,15 @@ The product must not become a wallet dashboard.
 
 ---
 
-# 17. Service vs Package vs Pass
+# 17. Service vs Pass vs Purchased Pass
 
-These three concepts must never be confused.
+These concepts must never be confused.
+
+There is no separate Package product. The sellable thing is a Pass.
 
 ## Service
 
-The underlying activity.
+The underlying activity / service type a Pass belongs to.
 
 Example:
 
@@ -776,24 +777,44 @@ Example:
 Personal Training
 ```
 
+A Pass currently inherits its Discover category from this service type. Category classifies the Pass; it does not create another product layer.
+
 ---
 
-## Package
+## Pass
 
-The commercial offering.
+The commercial product. A provider creates a Pass and can publish it for sale.
 
 Example:
 
 ```text
 10 Personal Training Sessions
 250 NIM
+10 sessions
 ```
+
+Other examples: `10 Guitar Lessons`, `8 Personal Training Sessions`, `5 Therapy Sessions`.
+
+A Pass may include:
+
+* title
+* description
+* provider
+* price in NIM
+* number of sessions
+* service type
+* category
+* optional visual identity
+* optional validity / expiration
+* draft or published state
+
+It does not represent a specific customer.
 
 ---
 
-## Pass
+## Purchased Pass / My Pass
 
-A specific customer's purchased entitlement.
+A specific customer's owned copy of that Pass, with independent session progress.
 
 Example:
 
@@ -801,8 +822,8 @@ Example:
 Owner:
 Customer A
 
-Purchased:
-10 sessions
+Pass:
+10 Guitar Lessons
 
 Used:
 3
@@ -810,6 +831,8 @@ Used:
 Remaining:
 7
 ```
+
+Another customer who buys the same Pass has their own remaining-session count.
 
 Relationship:
 
@@ -819,7 +842,7 @@ SERVICE
 Personal Training
       │
       ▼
-PACKAGE
+PASS
 
 10 Sessions
 250 NIM
@@ -828,20 +851,22 @@ PACKAGE
 PURCHASE
       │
       ▼
-PASS
+PURCHASED PASS
 
-Customer-specific entitlement
+Customer-specific session progress
 ```
 
-A package may be purchased many times.
+A Pass may be purchased many times.
 
-Every valid purchase creates a separate pass.
+Every valid purchase creates a separate purchased pass.
+
+Customers see this as **My Pass**. The internal snapshot exists so later edits to the live Pass cannot change what was already bought. That is an implementation detail, not a second product named Pass.
 
 ---
 
-# 18. Package Definition
+# 18. Pass Definition
 
-Providers sell packages.
+Providers sell Passes.
 
 Example:
 
@@ -868,15 +893,15 @@ Expiration:
 Optional
 ```
 
-The package defines the commercial offer.
+The Pass defines the commercial offer.
 
-It does not represent a specific customer.
+Create Pass produces this object. Publish puts it in Discover.
 
 ---
 
-# 19. Package Snapshot Principle
+# 19. Pass Snapshot Principle
 
-Already purchased passes must not silently change when the provider modifies a package later.
+Already purchased Passes must not silently change when the provider later edits the live Pass.
 
 Suppose the customer buys:
 
@@ -885,24 +910,24 @@ Suppose the customer buys:
 250 NIM
 ```
 
-Later, the provider changes the package to:
+Later, the provider changes the Pass to:
 
 ```text
 8 sessions
 300 NIM
 ```
 
-The existing customer's pass must remain based on the purchased terms.
+The existing customer's purchased Pass must remain based on the purchased terms.
 
 Therefore:
 
 ```text
-Package = current commercial offering
+Pass = current commercial offering (what Discover sells today)
 
-Pass = purchased entitlement based on historical purchase terms
+Purchased Pass = that offering frozen at purchase, plus this customer's remaining sessions
 ```
 
-These must remain separate.
+These must remain separate in the backend. They must not appear as Package versus Pass in the product.
 
 ---
 
@@ -917,7 +942,7 @@ Who is providing the service?
 
 What do they offer?
 
-Which packages can I purchase?
+Which Passes can I purchase?
 ```
 
 A provider profile may contain:
@@ -927,7 +952,7 @@ A provider profile may contain:
 * brand image,
 * short description,
 * services,
-* available packages,
+* available Passes,
 * relevant public information.
 
 Example:
@@ -940,7 +965,7 @@ Personal Trainer
 Helping people build strength
 and healthier habits.
 
-Packages
+Passes
 
 5 Sessions
 10 Sessions
@@ -953,15 +978,15 @@ It must not become a full social network.
 
 ---
 
-# 21. Package Discovery
+# 21. Pass Discovery
 
-Packages should be straightforward to discover and share.
+Passes should be straightforward to discover and share.
 
 Potential entry points include:
 
 * Nimpass web application,
 * provider profile,
-* direct package URL,
+* direct Pass URL,
 * shared link,
 * QR code,
 * Nimiq Pay Mini App discovery,
@@ -975,7 +1000,7 @@ A direct-link-first experience is valid.
 
 The important requirement is:
 
-> A customer must be able to reliably reach a provider's package and understand the offer.
+> A customer must be able to reliably reach a provider's Pass and understand the offer.
 
 ---
 
@@ -985,7 +1010,7 @@ Before paying, the customer must clearly understand:
 
 * provider,
 * service,
-* package,
+* Pass,
 * number of sessions,
 * price,
 * currency,
@@ -1027,7 +1052,7 @@ However, payment alone is not the product.
 Conceptually:
 
 ```text
-Package selected
+Pass selected
       ↓
 Payment initiated
       ↓
@@ -1060,6 +1085,11 @@ Detailed Nimiq payment implementation belongs in the dedicated integration docum
 
 # 24. Session Redemption
 
+> **Superseded in part by `DECISIONS.md` ADR-007.** The two-party validation
+> below is no longer the model: a session is spent by the pass owner, signing
+> with their own wallet, and the provider takes no part in it. Everything else
+> in this section stands.
+
 Session redemption means consuming one available session from an active pass.
 
 Example:
@@ -1070,10 +1100,8 @@ Example:
 Current:
 6 remaining
 
-Customer attends session.
-
-Provider and customer participate
-in the required validation flow.
+Customer uses a session from their own pass
+and confirms it in their wallet.
 
 Redemption succeeds.
 
@@ -1095,24 +1123,25 @@ QR scanning is only one possible interaction mechanism.
 
 Depending on device and environment, redemption may use:
 
-* short-lived QR code,
-* one-time code,
-* secure validation link,
-* provider-side validation,
 * wallet authorization,
 * another approved challenge mechanism.
+
+Nimpass implements **wallet authorization** (`DECISIONS.md` ADR-007). QR
+scanning, one-time codes and provider-side validation were all permitted by this
+section and none of them is used: they all require a second device and a second
+person, which the product no longer does.
 
 For example:
 
 ```text
 Mobile customer
-→ displays QR
+→ confirms in Nimiq Pay
 
 Desktop customer
-→ displays short-lived code
+→ confirms in the Nimiq Hub
 
-Provider
-→ validates challenge
+Backend
+→ verifies the signature and spends one session
 ```
 
 The underlying security and business rules must remain consistent regardless of transport.
@@ -1330,13 +1359,18 @@ The customer must not need to rediscover an old payment page every time they wan
 
 # 30. Provider Workspace
 
+> **Superseded by `DECISIONS.md` ADR-008.** There is no provider workspace. The
+> provider experience is one screen — the Pass form — and the list of Passes it
+> came from. The section below describes what was removed and why the removal
+> needed a decision record rather than a refactor.
+
 Providers require more operational functionality than customers.
 
 The provider experience may include:
 
 * overview,
 * services,
-* packages,
+* Passes,
 * active passes,
 * completed passes,
 * session validation,
@@ -1372,7 +1406,7 @@ The customer returns to:
 
 The provider returns to:
 
-* manage packages,
+* manage Passes,
 * validate sessions,
 * inspect active passes,
 * serve repeat customers,
@@ -1423,17 +1457,17 @@ The payment and resulting service entitlement exist in the same product experien
 
 For providers, Nimpass should answer:
 
-> **How can I sell and manage prepaid session packages without manually tracking every customer's balance?**
+> **How can I sell and manage prepaid session Passes without manually tracking every customer's balance?**
 
 Providers receive:
 
-## Package Sales
+## Pass Sales
 
 Create multi-session offers.
 
 ## NIM Payments
 
-Sell those packages using NIM.
+Sell those Passes using NIM.
 
 ## Pass Management
 
@@ -1605,7 +1639,7 @@ Not:
 
 > **Buy anything with NIM.**
 
-NIM exists as part of the Nimpass service-package lifecycle.
+NIM exists as part of the Nimpass service-Pass lifecycle.
 
 ---
 
@@ -1662,7 +1696,7 @@ Features should belong to Nimpass when they improve one or more of:
 ```text
 Service Discovery
 Provider Trust
-Package Purchase
+Pass Purchase
 NIM Payment
 Pass Ownership
 Pass Management
@@ -1689,11 +1723,11 @@ The provider can:
 
 * establish a provider profile,
 * create a service,
-* create a package,
+* create a Pass,
 * define session quantity,
 * define NIM price,
-* publish a package,
-* share a package,
+* publish a Pass,
+* share a Pass,
 * see relevant purchased passes,
 * participate in session validation,
 * see pass state.
@@ -1704,9 +1738,9 @@ The provider can:
 
 The customer can:
 
-* open a provider or package,
+* open a provider or Pass,
 * understand the offer,
-* purchase the package,
+* purchase the Pass,
 * pay in NIM,
 * receive a digital pass,
 * access that pass later,
@@ -1724,7 +1758,7 @@ The system can:
 * distinguish payment states,
 * create passes under valid purchase conditions,
 * associate passes with their owners,
-* preserve purchased package terms,
+* preserve purchased Pass terms,
 * maintain correct session counts,
 * prevent negative balances,
 * reject invalid redemption,
@@ -1794,7 +1828,7 @@ A new customer should be able to:
 ```text
 1. Open Nimpass.
 
-2. Find or open a package.
+2. Find or open a Pass.
 
 3. Understand the provider.
 
@@ -1804,7 +1838,7 @@ A new customer should be able to:
 
 6. Understand the NIM price.
 
-7. Purchase the package.
+7. Purchase the Pass.
 
 8. Receive a pass.
 
@@ -1823,7 +1857,7 @@ A new customer should be able to:
 
 15. Repeat until completion.
 
-16. Buy another package if desired.
+16. Buy another Pass if desired.
 ```
 
 A provider should similarly be able to:
@@ -1831,7 +1865,7 @@ A provider should similarly be able to:
 ```text
 1. Create a service.
 
-2. Create a package.
+2. Create a Pass.
 
 3. Publish it.
 
@@ -1862,7 +1896,7 @@ Bad:
 
 ```text
 Settings
-→ Package
+→ Pass
 → Usage
 → Balance
 → 7
@@ -2062,7 +2096,7 @@ Desktop provider view:
 │            │                              │
 │ Overview   │ Active Passes       Activity │
 │ Services   │                              │
-│ Packages   │ Packages            Metrics  │
+│ Passes   │ Passes            Metrics  │
 │ Passes     │                              │
 └────────────┴──────────────────────────────┘
 ```
@@ -2075,7 +2109,7 @@ Overview
 Active Passes
 18
 
-Packages
+Passes
 3
 
 Recent Activity
@@ -2096,7 +2130,7 @@ A user should not be forced through unnecessary onboarding before understanding 
 Whenever technically and securely possible:
 
 ```text
-Open package
+Open Pass
 → understand offer
 → purchase
 ```
@@ -2110,7 +2144,7 @@ Open app
 → verify email
 → profile
 → onboarding
-→ find package
+→ find Pass
 → purchase
 ```
 
@@ -2142,7 +2176,7 @@ Secondary information may include:
 
 * transaction details,
 * full history,
-* package metadata,
+* Pass metadata,
 * technical identifiers.
 
 Complexity should only appear when necessary.
@@ -2202,7 +2236,7 @@ Purchase
 → Repurchase
 ```
 
-However, `Buy Again` must show the current package offer.
+However, `Buy Again` must show the current Pass offer.
 
 It must not silently reuse outdated:
 
@@ -2211,14 +2245,31 @@ It must not silently reuse outdated:
 * expiration rules,
 * availability.
 
+A Pass is sold with between 1 and 500 sessions. The bound is a product limit
+and a safety one: every session a Pass is sold with becomes a record the moment
+somebody buys it (`DECISIONS.md` ADR-012, ADR-027).
+
+A customer holds **one live pass per Pass**.
+
+While a pass is still usable — sessions remaining, expiration ahead — buying
+the same Pass again is refused. Two passes for one entitlement is not a larger
+purchase: the sessions do not merge, and the second is money spent on a record
+the customer did not mean to create.
+
+The refusal lifts the moment the pass is finished, which is where `Buy Again`
+starts. Expired and cancelled passes refuse nothing either.
+
+A purchase is also refused when the money would come back to the buyer — the
+pass's payout wallet is the wallet buying it. See `DECISIONS.md` ADR-026.
+
 ---
 
 # 57. Potential Future Extensions
 
 The architecture may eventually support:
 
-* additional package sizes,
-* package expiration,
+* additional Pass sizes,
+* Pass expiration,
 * pass gifting,
 * controlled transfer rules,
 * promotions,
@@ -2257,9 +2308,9 @@ Then he creates:
 10 Personal Training Sessions
 250 NIM
 
-The package receives a shareable page.
+The Pass receives a shareable page.
 
-Emin opens the package from his browser.
+Emin opens the Pass from his browser.
 
 He sees:
 
@@ -2319,7 +2370,7 @@ The pass becomes completed.
 
 The full usage history remains accessible.
 
-Emin may now purchase another package.
+Emin may now purchase another Pass.
 ```
 
 If a proposed feature does not fit naturally into this or another equivalent session-based scenario, question whether it belongs to the core product.
@@ -2336,8 +2387,10 @@ Use the following terminology consistently.
 | **Provider**           | Person or business providing a service      |
 | **Customer**           | Person purchasing and consuming the service |
 | **Service**            | Underlying activity, e.g. Personal Training |
-| **Package**            | Sellable bundle of sessions                 |
-| **Pass**               | Customer-specific purchased entitlement     |
+| **Pass**               | Sellable multi-session product a provider creates and publishes |
+| **Purchased Pass** / **My Pass** | Customer's owned copy of a Pass, with independent remaining sessions |
+| **Sessions**           | Usage rights inside a Pass                  |
+| **Category**           | Classification of a Pass (Fitness, Music, Therapy, …) |
 | **Session**            | One unit of service consumption             |
 | **Remaining Sessions** | Sessions still available                    |
 | **Used Sessions**      | Sessions already consumed                   |
@@ -2358,15 +2411,15 @@ The following statements should remain true throughout development.
 
 1. A service represents an underlying activity.
 
-2. A package represents a commercial offering.
+2. A Pass represents a commercial offering people can buy.
 
-3. A pass represents a specific customer's purchased entitlement.
+3. A purchased Pass represents a specific customer's independent session progress.
 
-4. A successful valid purchase creates a customer-specific pass.
+4. A successful valid purchase creates a customer-specific purchased Pass.
 
-5. A pass preserves the relevant purchased package terms.
+5. A purchased Pass preserves the relevant purchased terms of the live Pass.
 
-6. A pass belongs to an identifiable customer context.
+6. A purchased Pass belongs to an identifiable customer context.
 
 7. A pass has a finite original session quantity.
 
@@ -2392,7 +2445,7 @@ The following statements should remain true throughout development.
 
 18. Nimpass remains a multi-session service-pass product.
 
-19. Existing passes must not silently change when a package definition changes.
+19. Existing purchased Passes must not silently change when the live Pass is edited.
 
 20. Web is a first-class platform.
 
@@ -2413,9 +2466,9 @@ These invariants must not be violated casually.
 Before adding a major feature, ask:
 
 ```text
-Does this help providers sell session packages?
+Does this help providers sell session Passes?
 
-Does this help customers understand packages?
+Does this help customers understand Passes?
 
 Does this improve purchasing?
 
@@ -2474,7 +2527,7 @@ Every important screen should pass this test.
 
 # 63. Short Product Pitch
 
-> **Nimpass is a web-first digital session pass platform for recurring services. Providers such as trainers, tutors, and coaches can sell prepaid multi-session packages in NIM, while customers receive a persistent digital pass that shows exactly how many sessions remain and allows each session to be securely redeemed over time.**
+> **Nimpass is a web-first digital session pass platform for recurring services. Providers such as trainers, tutors, and coaches can sell prepaid multi-session Passes in NIM, while customers receive a persistent digital pass that shows exactly how many sessions remain and allows each session to be securely redeemed over time.**
 
 ---
 

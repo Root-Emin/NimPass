@@ -30,15 +30,15 @@ export async function serveFromFixtures(
 
   await delay(LATENCY_MS)
 
-  if (route === '/api/v1/public/packages') {
+  if (route === '/api/v1/public/passes') {
     // No query parameters in the contract: the whole published catalogue.
     return { handled: true, data: { items: FIXTURE_OFFERS } }
   }
 
-  const packageMatch = route.match(/^\/api\/v1\/public\/packages\/([^/]+)$/)
-  if (packageMatch) {
-    const offer = FIXTURE_OFFERS.find((candidate) => candidate.package.id === packageMatch[1])
-    if (!offer) throw notFound('NOT_FOUND', "This package doesn't exist or was removed.")
+  const passMatch = route.match(/^\/api\/v1\/public\/passes\/([^/]+)$/)
+  if (passMatch) {
+    const offer = FIXTURE_OFFERS.find((candidate) => candidate.pass.id === passMatch[1])
+    if (!offer) throw notFound('NOT_FOUND', "This pass doesn't exist or was removed.")
     return { handled: true, data: offer }
   }
 

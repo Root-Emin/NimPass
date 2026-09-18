@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { normalizeNimiqError, isProviderErrorResponse } from './errors'
+import { HUB_ENDPOINTS, resolveHubEndpoint } from './hub-endpoint'
 import { resolveInitTimeoutMs, resolveNetwork } from './network'
 
 describe('normalizeNimiqError', () => {
@@ -39,16 +40,15 @@ describe('normalizeNimiqError', () => {
 
 describe('network configuration', () => {
   // Values are spelled as `domain.NimiqNetwork` spells them.
-  it('defaults to testnet when unset or unrecognised', () => {
-    expect(resolveNetwork(undefined)).toBe('TESTNET')
-    expect(resolveNetwork('')).toBe('TESTNET')
-    expect(resolveNetwork('nonsense')).toBe('TESTNET')
+  it('refuses anything except an explicit MAINNET or TESTNET', () => {
+    expect(() => resolveNetwork('')).toThrow(/VITE_NIMIQ_NETWORK/)
+    expect(() => resolveNetwork('nonsense')).toThrow(/VITE_NIMIQ_NETWORK/)
   })
 
   it('only opts into mainnet on an explicit value', () => {
     expect(resolveNetwork('MAINNET')).toBe('MAINNET')
-    expect(resolveNetwork('mainnet')).toBe('MAINNET')
-    expect(resolveNetwork('main')).toBe('MAINNET')
+    expect(() => resolveNetwork('mainnet')).toThrow(/VITE_NIMIQ_NETWORK/)
+    expect(() => resolveNetwork('main')).toThrow(/VITE_NIMIQ_NETWORK/)
     expect(resolveNetwork('TESTNET')).toBe('TESTNET')
   })
 
@@ -59,6 +59,41 @@ describe('network configuration', () => {
     expect(resolveInitTimeoutMs('-1')).toBe(3000)
     expect(resolveInitTimeoutMs('not-a-number')).toBe(3000)
     expect(resolveInitTimeoutMs('500')).toBe(500)
+  })
+})
+
+describe('Nimiq Hub endpoint', () => {
+  /*
+   * The two official endpoints (https://nimiq.dev/hub/getting-started). The
+   * endpoint follows the network this build is configured for, because a
+   * testnet transaction must never settle a mainnet purchase
+   * (docs/09-SECURITY.md §101).
+   */
+  it('follows the configured network', () => {
+    expect(resolveHubEndpoint('MAINNET')).toBe('https://hub.nimiq.com')
+    expect(resolveHubEndpoint('TESTNET')).toBe('https://hub.nimiq-testnet.com')
+    expect(HUB_ENDPOINTS.MAINNET).toBe('https://hub.nimiq.com')
+    expect(HUB_ENDPOINTS.TESTNET).toBe('https://hub.nimiq-testnet.com')
+  })
+
+  it('allows a local Hub during testnet development', () => {
+    expect(resolveHubEndpoint('TESTNET', 'http://localhost:8080/')).toBe('http://localhost:8080')
+  })
+
+  it('ignores an override on mainnet, where real money is at stake', () => {
+    // A misconfigured build must not be able to route real payments through an
+    // arbitrary origin, and "it was in the environment file" is not a reason to
+    // trust one.
+    expect(resolveHubEndpoint('MAINNET', 'https://not-the-hub.example')).toBe(
+      'https://hub.nimiq.com',
+    )
+  })
+
+  it('ignores an override that is not an http(s) URL', () => {
+    expect(resolveHubEndpoint('TESTNET', 'javascript:alert(1)')).toBe(
+      'https://hub.nimiq-testnet.com',
+    )
+    expect(resolveHubEndpoint('TESTNET', '   ')).toBe('https://hub.nimiq-testnet.com')
   })
 })
 

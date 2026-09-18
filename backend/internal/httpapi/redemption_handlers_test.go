@@ -29,8 +29,6 @@ func TestRedemptionRoutesRequireAuthenticatedSession(t *testing.T) {
 		{name: "challenge detail", method: http.MethodGet, path: "/api/v1/redemption-challenges/00000000-0000-4000-8000-000000000001"},
 		{name: "authorization", method: http.MethodPost, path: "/api/v1/redemption-challenges/00000000-0000-4000-8000-000000000001/authorization"},
 		{name: "customer history", method: http.MethodGet, path: "/api/v1/passes/00000000-0000-4000-8000-000000000001/redemptions"},
-		{name: "provider lookup", method: http.MethodPost, path: "/api/v1/providers/00000000-0000-4000-8000-000000000001/redemptions/lookup"},
-		{name: "provider confirm", method: http.MethodPost, path: "/api/v1/providers/00000000-0000-4000-8000-000000000001/redemptions/confirm"},
 		{name: "provider history", method: http.MethodGet, path: "/api/v1/providers/00000000-0000-4000-8000-000000000001/redemptions"},
 	}
 	for _, route := range routes {
@@ -50,34 +48,48 @@ func TestRedemptionRoutesRequireAuthenticatedSession(t *testing.T) {
 	}
 }
 
+// The provider-side redemption routes are gone, and staying gone is the point:
+// a session is spent by the person who owns the pass, so there is no endpoint
+// through which a second party can consume one.
+func TestProviderRedemptionWriteRoutesAreNotRouted(t *testing.T) {
+	router := NewRouterWithConfig(nil, slog.Default(), config.Config{Environment: "test", Network: "TESTNET", PublicOrigin: "http://localhost:5173"})
+	for _, path := range []string{
+		"/api/v1/providers/00000000-0000-4000-8000-000000000001/redemptions/lookup",
+		"/api/v1/providers/00000000-0000-4000-8000-000000000001/redemptions/confirm",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, http.NoBody)
+		req.Header.Set("Origin", "http://localhost:5173")
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("%s is still routed: status=%d body=%s", path, rr.Code, rr.Body.String())
+		}
+	}
+}
+
 type redemptionHTTPStore struct {
-	view         application.RedemptionView
-	lookupCalls  int
-	confirmCalls int
+	view     application.RedemptionView
+	consumes int
 }
 
 func (s *redemptionHTTPStore) CurrentChallenge(context.Context, domain.ID, domain.ID, domain.WalletAddress, time.Time) (application.RedemptionView, error) {
 	return application.RedemptionView{}, application.ErrNotFound
 }
 func (s *redemptionHTTPStore) GetChallenge(context.Context, domain.ID, domain.ID, domain.WalletAddress) (application.RedemptionView, error) {
-	return application.RedemptionView{}, application.ErrNotFound
-}
-func (s *redemptionHTTPStore) LookupRedemption(context.Context, domain.ID, domain.ID, string) (application.RedemptionView, error) {
-	s.lookupCalls++
 	return s.view, nil
 }
 func (s *redemptionHTTPStore) InsertChallenge(context.Context, domain.RedemptionChallenge, domain.ID, domain.WalletAddress, time.Time) (application.RedemptionView, error) {
 	return application.RedemptionView{}, application.ErrNotFound
 }
-func (s *redemptionHTTPStore) AuthorizeChallenge(context.Context, domain.ID, domain.ID, domain.WalletAddress, string, string, string, [32]byte, [32]byte, [32]byte, time.Time) (application.RedemptionView, error) {
-	return application.RedemptionView{}, application.ErrNotFound
-}
-func (s *redemptionHTTPStore) RotateToken(context.Context, domain.ID, domain.ID, domain.WalletAddress, [32]byte, string, time.Time) (application.RedemptionView, error) {
-	return application.RedemptionView{}, application.ErrNotFound
-}
-func (s *redemptionHTTPStore) ConfirmRedemption(context.Context, domain.ID, domain.ID, string, time.Time) (application.RedemptionView, error) {
-	s.confirmCalls++
-	return s.view, nil
+func (s *redemptionHTTPStore) AuthorizeAndConsume(context.Context, domain.ID, domain.ID, domain.WalletAddress, string, string, [32]byte, [32]byte, time.Time) (application.RedemptionView, error) {
+	s.consumes++
+	consumed := s.view
+	consumed.Challenge.Status = domain.RedemptionConsumed
+	consumed.Pass.UsedSessions = 3
+	consumed.Pass.RemainingSessions = 2
+	consumed.HasRedemption = true
+	return consumed, nil
 }
 func (s *redemptionHTTPStore) ListPassHistory(context.Context, domain.ID, domain.ID, domain.WalletAddress) ([]application.RedemptionHistoryItem, error) {
 	return nil, nil
@@ -89,58 +101,84 @@ func (s *redemptionHTTPStore) RecordEvent(context.Context, domain.ID, string, st
 	return nil
 }
 
-func TestRedemptionProviderLookupAndConfirmHTTPContract(t *testing.T) {
+// Authorizing is now the whole redemption: one call, and the session is spent.
+// The response carries the consumed redemption and the new counts, and it does
+// not carry a reference for anybody to present, because none is issued.
+func TestRedemptionAuthorizationConsumesTheSession(t *testing.T) {
 	now := time.Now().UTC()
 	providerID := domain.ID("00000000-0000-4000-8000-000000000001")
 	passID := domain.ID("00000000-0000-4000-8000-000000000002")
 	challengeID := domain.ID("00000000-0000-4000-8000-000000000003")
 	redemptionID := domain.ID("00000000-0000-4000-8000-000000000004")
-	expires := now.Add(5 * time.Minute)
 	view := application.RedemptionView{
 		Challenge: domain.RedemptionChallenge{
-			ID: challengeID, PassID: passID, ProviderID: providerID, Status: domain.RedemptionAuthorized,
-			CreatedAt: now.Add(-time.Minute), ExpiresAt: expires, ExpectedUsedSessions: 2, ExpectedRemainingSessions: 3,
+			ID: challengeID, PassID: passID, ProviderID: providerID, Status: domain.RedemptionCreated,
+			Network: domain.NimiqTestnet, Environment: "test",
+			CreatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(4 * time.Minute),
+			ExpectedUsedSessions: 2, ExpectedRemainingSessions: 3,
 		},
-		Pass: domain.Pass{
-			ID: passID, Snapshot: domain.PurchaseSnapshot{ProviderID: providerID, ServiceName: "Yoga", PackageTitle: "Ten sessions"},
-			UsedSessions: 2, RemainingSessions: 3, OriginalSessions: 5, Status: domain.PassActive,
+		Pass: domain.PurchasedPass{
+			ID: passID, Snapshot: domain.PurchaseSnapshot{ProviderID: providerID, ServiceName: "Yoga", PassTitle: "Ten sessions"},
+			UsedSessions: 2, RemainingSessions: 3, OriginalSessions: 5, Status: domain.PurchasedPassActive,
 		},
 	}
-	view.QRExpiresAt = &expires
 	view.Redemption = domain.Redemption{ID: redemptionID, PassID: passID, ProviderID: providerID, SessionOrdinal: 3, ConsumedAt: now}
+
 	store := &redemptionHTTPStore{view: view}
-	h := &handler{redemptions: application.Redemptions{Store: store, Now: func() time.Time { return now }}, limits: newLimiter()}
+	h := &handler{
+		redemptions: application.Redemptions{
+			Store:       store,
+			Verifier:    acceptingVerifier{},
+			Network:     domain.NimiqTestnet,
+			Environment: "test",
+			Now:         func() time.Time { return now },
+		},
+		limits: newLimiter(),
+	}
 	router := chi.NewRouter()
-	router.Post("/api/v1/providers/{providerID}/redemptions/lookup", h.lookupRedemption)
-	router.Post("/api/v1/providers/{providerID}/redemptions/confirm", h.confirmRedemption)
+	router.Post("/api/v1/redemption-challenges/{challengeID}/authorization", h.authorizeRedemption)
 	session := application.Session{Identity: application.Identity{ID: domain.ID("00000000-0000-4000-8000-000000000005"), Wallet: "NQTEST"}}
-	reference := "NR1:" + strings.Repeat("a", 64)
 
-	request := func(path string) (int, map[string]any) {
-		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"redemptionReference":"`+reference+`"}`))
-		req.Header.Set("Content-Type", "application/json")
-		req = req.WithContext(context.WithValue(req.Context(), sessionKey{}, session))
-		rr := httptest.NewRecorder()
-		router.ServeHTTP(rr, req)
-		var body map[string]any
-		if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
-			t.Fatal(err)
-		}
-		return rr.Code, body
-	}
+	body := `{"publicKey":"` + strings.Repeat("ab", 32) + `","signature":"` + strings.Repeat("cd", 64) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/redemption-challenges/"+string(challengeID)+"/authorization", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), sessionKey{}, session))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
 
-	status, lookup := request("/api/v1/providers/" + string(providerID) + "/redemptions/lookup")
-	if status != http.StatusOK || lookup["challengeId"] != string(challengeID) || lookup["serviceName"] != "Yoga" || lookup["nextSessionOrdinal"] != float64(3) {
-		t.Fatalf("lookup response status=%d body=%v", status, lookup)
+	var response map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
 	}
-	if _, leaked := lookup["ownerWallet"]; leaked || store.lookupCalls != 1 || store.confirmCalls != 0 {
-		t.Fatalf("lookup leaked or consumed state: body=%v lookupCalls=%d confirmCalls=%d", lookup, store.lookupCalls, store.confirmCalls)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("authorization status=%d body=%v", rr.Code, response)
 	}
-	status, confirmation := request("/api/v1/providers/" + string(providerID) + "/redemptions/confirm")
-	if status != http.StatusOK || confirmation["redemptionId"] != string(redemptionID) || confirmation["remainingSessions"] != float64(3) {
-		t.Fatalf("confirm response status=%d body=%v", status, confirmation)
+	if store.consumes != 1 {
+		t.Fatalf("authorization consumed %d times, want exactly 1", store.consumes)
 	}
-	if store.confirmCalls != 1 {
-		t.Fatalf("confirm call count=%d", store.confirmCalls)
+	if response["status"] != string(domain.RedemptionConsumed) {
+		t.Fatalf("challenge status=%v, want CONSUMED", response["status"])
 	}
+	redemption, ok := response["redemption"].(map[string]any)
+	if !ok || redemption["id"] != string(redemptionID) {
+		t.Fatalf("response carries no redemption: %v", response)
+	}
+	pass, ok := response["pass"].(map[string]any)
+	if !ok || pass["remainingSessions"] != float64(2) || pass["usedSessions"] != float64(3) {
+		t.Fatalf("response pass counts=%v", response["pass"])
+	}
+	// Nothing to hand to a provider, so nothing may be emitted.
+	if _, present := response["redemptionReference"]; present {
+		t.Fatalf("response still carries a redemption reference: %v", response)
+	}
+	if _, present := response["qrExpiresAt"]; present {
+		t.Fatalf("response still carries a QR expiry: %v", response)
+	}
+}
+
+type acceptingVerifier struct{}
+
+func (acceptingVerifier) Verify(string, string, string, string) error { return nil }
+func (acceptingVerifier) VerifyAs(string, string, string, string, string) error {
+	return nil
 }

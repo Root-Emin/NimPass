@@ -12,6 +12,7 @@ import {
   throwNormalized,
 } from './errors'
 import { resolveInitTimeoutMs } from './network'
+import type { NetworkReadiness } from './transport'
 
 /**
  * The one boundary between Nimpass and `@nimiq/mini-app-sdk`.
@@ -84,6 +85,10 @@ async function runInit(timeoutMs: number): Promise<NimiqInitResult> {
         nimiqProviderAvailable: true,
         walletOperationsAvailable: true,
         insideNimiqPay,
+        transport: 'mini-app',
+        // Native approval sheets are not browser popups: one user action can
+        // carry a whole flow. Only the Hub transport needs a gesture each time.
+        gesturePerOperation: false,
       },
       error: null,
     }
@@ -225,9 +230,14 @@ async function withApproval<T>(operation: () => Promise<T>): Promise<T> {
  * always needs a server-issued challenge and a signature (docs/04 §15,
  * docs/09-SECURITY.md §11, §19).
  */
-export async function listAccounts(): Promise<string[]> {
+export async function listAccounts(fresh = false): Promise<string[]> {
   const provider = await requireProvider()
-  return withApproval(() => call<string[]>(() => provider.listAccounts()))
+  return withApproval(() => call<string[]>(() => {
+    // SDK 0.1.0 caches accounts. Disconnect clears that cache; the next read
+    // asks the host again. This is not an application logout.
+    if (fresh) provider.disconnect()
+    return provider.listAccounts()
+  }))
 }
 
 /**
@@ -250,11 +260,6 @@ export async function isConsensusEstablished(): Promise<boolean> {
 export async function getBlockNumber(): Promise<number> {
   const provider = await requireProvider()
   return call<number>(() => provider.getBlockNumber())
-}
-
-export interface NetworkReadiness {
-  consensusEstablished: boolean
-  blockNumber: number | null
 }
 
 /**

@@ -36,7 +36,7 @@ func (r AuthRepository) GetChallenge(ctx context.Context, id domain.ID) (applica
 }
 
 func (r AuthRepository) RecordChallengeFailure(ctx context.Context, id domain.ID) error {
-	_, err := r.Pool.Exec(ctx, `UPDATE auth_challenges SET failed_attempts=LEAST(failed_attempts+1,5) WHERE id=$1 AND consumed_at IS NULL`, id)
+	_, err := r.Pool.Exec(ctx, `WITH failed AS (UPDATE auth_challenges SET failed_attempts=LEAST(failed_attempts+1,5) WHERE id=$1 AND consumed_at IS NULL RETURNING id) INSERT INTO auth_events(challenge_id,kind) SELECT id,'PROOF_FAILED' FROM failed`, id)
 	return err
 }
 
@@ -65,6 +65,9 @@ func (r AuthRepository) CompleteLogin(ctx context.Context, challengeID domain.ID
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO auth_sessions(id,identity_id,token_digest,csrf_digest,created_at,expires_at,last_used_at) VALUES($1,$2,$3,$4,$5,$6,$5)`, sessionID, identity.ID, tokenDigest[:], csrfDigest[:], now, expires)
 	if err != nil {
+		return application.Session{}, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO auth_events(challenge_id,kind,occurred_at) VALUES($1,'LOGIN_SUCCEEDED',$2)`, challengeID, now); err != nil {
 		return application.Session{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {

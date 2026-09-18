@@ -2,10 +2,12 @@ import * as DialogPrimitive from '@radix-ui/react-dialog'
 import type { ReactNode } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { DialogOverlay, DialogPositioner } from '@/components/ui/dialog'
+import { dialogPanelClass } from '@/components/ui/dialog-panel'
 import { cn } from '@/lib/utils'
 
 /**
- * Confirmation for a consequential action — deactivating a package, for
+ * Confirmation for a consequential action — deactivating a pass, for
  * instance (docs/03-DESIGN-SYSTEM.md §83).
  *
  * Uses `role="alertdialog"` so assistive tech announces it as a decision that
@@ -35,38 +37,38 @@ export function ConfirmDialog({
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-40 bg-ink/25 backdrop-blur-[2px]" />
-        <DialogPrimitive.Content
-          role="alertdialog"
-          className={cn(
-            'fixed left-1/2 top-1/2 z-50 flex w-[calc(100vw-2rem)] max-w-sm -translate-x-1/2 -translate-y-1/2 flex-col gap-4 rounded-xl border border-line bg-surface p-6 shadow-raised',
-          )}
-        >
-          <div className="space-y-1.5">
-            <DialogPrimitive.Title className="text-h3 font-semibold text-ink">
-              {title}
-            </DialogPrimitive.Title>
-            <DialogPrimitive.Description className="text-body text-ink-muted">
-              {description}
-            </DialogPrimitive.Description>
-          </div>
+        <DialogOverlay />
+        <DialogPositioner>
+          <DialogPrimitive.Content
+            role="alertdialog"
+            className={cn(dialogPanelClass, 'max-w-sm')}
+          >
+            <div className="space-y-1.5">
+              <DialogPrimitive.Title className="text-h3 font-semibold text-ink">
+                {title}
+              </DialogPrimitive.Title>
+              <DialogPrimitive.Description className="text-body text-ink-muted">
+                {description}
+              </DialogPrimitive.Description>
+            </div>
 
-          <div className="flex justify-end gap-3">
-            <DialogPrimitive.Close asChild>
-              <Button variant="secondary" size="sm" disabled={loading}>
-                {cancelLabel}
+            <div className="flex justify-end gap-3">
+              <DialogPrimitive.Close asChild>
+                <Button variant="secondary" size="sm" disabled={loading}>
+                  {cancelLabel}
+                </Button>
+              </DialogPrimitive.Close>
+              <Button
+                size="sm"
+                variant={tone === 'danger' ? 'danger' : 'primary'}
+                loading={loading}
+                onClick={onConfirm}
+              >
+                {confirmLabel}
               </Button>
-            </DialogPrimitive.Close>
-            <Button
-              size="sm"
-              variant={tone === 'danger' ? 'danger' : 'primary'}
-              loading={loading}
-              onClick={onConfirm}
-            >
-              {confirmLabel}
-            </Button>
-          </div>
-        </DialogPrimitive.Content>
+            </div>
+          </DialogPrimitive.Content>
+        </DialogPositioner>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>
   )

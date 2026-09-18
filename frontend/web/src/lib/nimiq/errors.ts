@@ -3,9 +3,9 @@ import type { ErrorResponse } from '@nimiq/mini-app-sdk'
 import type { NimiqError, NimiqErrorKind } from '@/types/wallet'
 
 /**
- * Normalises everything the Nimiq provider can produce into a small, safe set
- * of kinds. Raw provider payloads never reach the UI
- * (docs/04-NIMIQ-MINI-APPS.md §32).
+ * Normalises everything either wallet transport can produce into a small, safe
+ * set of kinds. Raw provider or Hub payloads never reach the UI
+ * (docs/04-NIMIQ-MINI-APPS.md §32, docs/09-SECURITY.md §123).
  *
  * The documented error names come from the official Nimiq Provider API
  * reference (https://nimiq.dev/mini-apps/api-reference/nimiq-provider):
@@ -20,11 +20,20 @@ import type { NimiqError, NimiqErrorKind } from '@/types/wallet'
  * must be treated as a normal outcome rather than a bug.
  * Ref: https://nimiq.dev/mini-apps/faq
  *
+ * The Nimiq Hub raises its own small set, defined in the Hub's `Constants.ts`
+ * and in `@nimiq/rpc`, and they mean the same things:
+ *
+ *   CANCELED              — user dismissed the Hub request
+ *   Connection was closed — user closed the Hub window
+ *   REQUEST_TIMED_OUT     — the Hub gave up on the request
+ *   Failed to open popup  — the browser blocked the window
+ *
  * Anything else is classified heuristically and reported as UNKNOWN rather than
  * guessed at, because no further error names are documented.
  *
- * Two shapes have to be handled, because the SDK uses both: a thrown exception,
- * and a resolved `{ error: { type, message } }` value.
+ * Three shapes have to be handled: a thrown exception, the Mini App SDK's
+ * resolved `{ error: { type, message } }` envelope, and a plain `Error` whose
+ * message *is* the Hub's error name.
  */
 
 /** Type guard for the SDK's in-band error envelope. */
@@ -38,17 +47,27 @@ export function isProviderErrorResponse(value: unknown): value is ErrorResponse 
   )
 }
 
+/**
+ * Copy is deliberately transport-neutral.
+ *
+ * The same failure can arrive from Nimiq Pay's native sheet or from the Hub's
+ * window, and naming the wrong one is worse than naming neither — a desktop
+ * visitor told to "open Nimiq Pay" when their Hub popup timed out is being sent
+ * to fetch a phone they do not need (docs/09-SECURITY.md §126). Where the
+ * remedy genuinely differs, the kind differs too: see `POPUP_BLOCKED`.
+ */
 const USER_FACING_COPY: Record<NimiqErrorKind, string> = {
-  PROVIDER_UNAVAILABLE:
-    "Nimiq Pay isn't available here. Open Nimpass in Nimiq Pay to continue.",
-  PROVIDER_TIMEOUT: "Nimiq Pay didn't respond. Try again in a moment.",
-  PROVIDER_INIT_FAILED: "We couldn't connect to Nimiq Pay. Try again in a moment.",
-  USER_REJECTED: 'You cancelled the request in Nimiq Pay.',
-  INVALID_TRANSACTION: "Nimiq Pay couldn't process this payment request.",
+  PROVIDER_UNAVAILABLE: "We couldn't reach a Nimiq wallet from here.",
+  PROVIDER_TIMEOUT: "Your wallet didn't respond. Try again in a moment.",
+  PROVIDER_INIT_FAILED: "We couldn't connect to your Nimiq wallet. Try again in a moment.",
+  USER_REJECTED: 'You cancelled the request in your wallet.',
+  INVALID_TRANSACTION: "Your wallet couldn't process this payment request.",
   NO_ACCOUNTS: 'No Nimiq account is available in this wallet.',
   INSUFFICIENT_FUNDS: "This wallet doesn't have enough NIM for this purchase.",
   NETWORK: "We couldn't reach the Nimiq network. Check your connection and try again.",
-  WALLET_BUSY: 'Finish the request already open in Nimiq Pay first.',
+  POPUP_BLOCKED:
+    'Your browser blocked the Nimiq wallet window. Allow pop-ups for this site, then try again.',
+  WALLET_BUSY: 'Finish the wallet request that is already open first.',
   UNKNOWN: 'Something went wrong with the wallet request. Please try again.',
 }
 
@@ -66,18 +85,25 @@ export function normalizeNimiqError(value: unknown): NimiqError {
   const text = extractErrorText(value)
   const lower = text.toLowerCase()
 
-  // Documented error names first.
+  // Documented error names first — Mini App provider, then Hub.
   if (lower.includes('permissiondenied')) return nimiqError('USER_REJECTED', value)
   if (lower.includes('invalidtransaction')) return nimiqError('INVALID_TRANSACTION', value)
 
-  // Undocumented phrasings that mean the same things.
+  // The Hub's own set. `CANCELED` and a closed window are the same outcome to a
+  // customer: they changed their mind, and nothing happened.
+  if (lower.includes('failed to open popup')) return nimiqError('POPUP_BLOCKED', value)
+  if (/\bcancell?ed\b/.test(lower) || lower.includes('connection was closed')) {
+    return nimiqError('USER_REJECTED', value)
+  }
+  if (lower.includes('request_timed_out')) return nimiqError('PROVIDER_TIMEOUT', value)
+
+  // Undocumented phrasings that mean the same things. (Anything spelling out
+  // "cancelled" is already caught above.)
   if (
     lower.includes('permission denied') ||
     lower.includes('user rejected') ||
     lower.includes('user denied') ||
-    lower.includes('rejected by user') ||
-    lower.includes('cancelled by user') ||
-    lower.includes('canceled by user')
+    lower.includes('rejected by user')
   ) {
     return nimiqError('USER_REJECTED', value)
   }

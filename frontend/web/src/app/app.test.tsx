@@ -1,7 +1,7 @@
 import { screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { renderApp } from '@/test/render'
+import { renderApp, stubSession } from '@/test/render'
 
 /**
  * The public-browsing guarantee: none of these routes may depend on a Nimiq
@@ -32,13 +32,16 @@ describe('application shell and routing', () => {
 
     expect(
       await screen.findByRole('heading', {
-        name: /Buy a package once/i,
+        name: /Buy a pass once/i,
         level: 1,
       }),
     ).toBeInTheDocument()
 
     expect(screen.getByRole('link', { name: 'Nimpass — home' })).toBeInTheDocument()
-    expect(screen.getByRole('navigation', { name: 'Main' })).toBeInTheDocument()
+    // Signed out the header carries no destinations, so the shell is proved by
+    // its landmarks rather than by a nav that only exists for an identity.
+    expect(screen.getByRole('banner')).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Footer' })).toBeInTheDocument()
     expect(screen.queryByText(/Vite/i)).not.toBeInTheDocument()
   })
 
@@ -47,7 +50,7 @@ describe('application shell and routing', () => {
     renderApp('/discover')
 
     expect(
-      await screen.findByRole('heading', { name: /Services worth coming back to/i, level: 1 }),
+      await screen.findByRole('heading', { name: /Passes worth coming back to/i, level: 1 }),
     ).toBeInTheDocument()
     expect(screen.getByRole('search')).toBeInTheDocument()
   })
@@ -60,44 +63,65 @@ describe('application shell and routing', () => {
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
   })
 
-  it('keeps a deep-linked package URL on the package route', async () => {
+  it('keeps a deep-linked pass URL on the pass route', async () => {
     stubUnreachableBackend()
-    renderApp('/packages/pkg_123')
+    renderApp('/pass/pkg_123')
 
-    // The route resolves to the package page rather than bouncing to the
+    // The route resolves to the pass page rather than bouncing to the
     // homepage (docs/02-USER-FLOWS.md §6).
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
-    expect(screen.queryByRole('heading', { name: /Buy a package once/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /Buy a pass once/i })).not.toBeInTheDocument()
   })
 
-  it('explains that passes are private instead of erroring with no wallet', async () => {
+  it('explains that passes are private and offers the login that opens them', async () => {
     stubUnreachableBackend()
     renderApp('/passes')
 
     expect(await screen.findByText('Your passes are private')).toBeInTheDocument()
+    // An ordinary browser reaches a wallet through the Nimiq Hub, so the gate
+    // offers the same sign-in the header does rather than naming a phone.
     expect(
-      screen.getByText(/Open Nimpass in Nimiq Pay to see the passes you own\./i),
+      screen.getByText(/Log in with your wallet to see the passes you own\./i),
     ).toBeInTheDocument()
+    // Two: the header's, and the gate's own. Both open the same flow.
+    expect(screen.getAllByRole('button', { name: 'Login' }).length).toBeGreaterThan(0)
   })
 
   it('keeps the wallet control visible but secondary when no wallet exists', async () => {
     stubUnreachableBackend()
     renderApp('/')
 
-    const walletButton = await screen.findByRole('button', { name: 'Wallet' })
+    const walletButton = await screen.findByRole('button', { name: 'Login' })
     expect(walletButton).toBeInTheDocument()
   })
 
-  it('renders the provider entry point', async () => {
+  it('renders the provider entry point for a signed-in identity', async () => {
     stubUnreachableBackend()
-    renderApp('/provider')
+    renderApp('/provider', { session: stubSession() })
+
+    // `/provider` has no dashboard and no workspace chrome of its own; it
+    // lands on My Store — the Passes this wallet made — as an ordinary page.
+    expect(
+      await screen.findByRole('heading', { name: 'My Store', level: 1 }),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('navigation', { name: 'Provider workspace' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('keeps the provider workspace out of sight without a session', async () => {
+    stubUnreachableBackend()
+    renderApp('/provider', { session: null })
 
     expect(
-      await screen.findByRole('heading', { name: 'Overview', level: 1 }),
+      await screen.findByRole('heading', { name: 'Log in to manage your workspace' }),
     ).toBeInTheDocument()
+    // Not the workspace with empty panels — the workspace does not render at
+    // all, so there is no chrome suggesting a workspace exists here.
     expect(
-      screen.getByRole('navigation', { name: 'Provider workspace' }),
-    ).toBeInTheDocument()
+      screen.queryByRole('navigation', { name: 'Provider workspace' }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Passes', level: 1 })).not.toBeInTheDocument()
   })
 
   it('renders a not-found page for an unknown route', async () => {

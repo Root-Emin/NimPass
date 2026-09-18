@@ -6,17 +6,32 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
-    <meta name="theme-color" content="#faf9f7" />
+    <meta name="theme-color" content="#faf8f5" />
     <meta
       name="description"
       content="Nimpass — buy prepaid session packages with NIM, keep one digital pass, and redeem your sessions over time."
     />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!--
+      The `np` monogram. PNG rather than the SVG that used to be here: the
+      mark is the brand's own artwork, a shaded ribbon, and tracing it into
+      vectors would be a different drawing. 32px is what browsers take for a
+      tab; 48 covers the higher-density and bookmark cases.
+    -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png" />
+    <!-- iOS paints a transparent home-screen icon black, so this one is opaque. -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!--
+      Two families, one job each (docs/03-DESIGN-SYSTEM.md §22):
+      Instrument Sans carries the headings — a contemporary grotesque with
+      warmth, not a geometric or futuristic face — and Inter carries UI and
+      body copy, where its legibility at small sizes is hard to beat.
+    -->
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Plus+Jakarta+Sans:wght@500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Instrument+Sans:wght@400;500;600&display=swap"
     />
     <title>Nimpass — Prepaid session passes, paid in NIM</title>
   </head>

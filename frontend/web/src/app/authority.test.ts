@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { globSync } from 'node:fs'
 
@@ -19,9 +19,19 @@ import { globSync } from 'node:fs'
 
 const SRC = join(process.cwd(), 'src')
 
+/**
+ * Application source: everything that ships, and nothing that does not.
+ *
+ * Tests are excluded, and so is `src/test/` — the harness beside them. These
+ * rules are about what the *application* is allowed to do; a fixture that
+ * names a field or a setup file that clears `localStorage` between tests is
+ * not the frontend taking authority over anything, and folding them in would
+ * only teach people to phrase the audit's exceptions more creatively.
+ */
 function sourceFiles(pattern: string): string[] {
   return globSync(pattern, { cwd: SRC })
     .filter((file) => !file.endsWith('.test.ts') && !file.endsWith('.test.tsx'))
+    .filter((file) => !file.startsWith(`test${sep}`))
     .map((file) => join(SRC, file))
 }
 
@@ -65,7 +75,7 @@ describe('the frontend is not the authority', () => {
   })
 
   it('never sends a price or recipient when creating a purchase', () => {
-    // The client sends a package id. Price, recipient, amount and reference all
+    // The client sends a pass id. Price, recipient, amount and reference all
     // come back from the backend (docs/05 §13-§14, docs/08 §71).
     const purchases = read(join(SRC, 'api/purchases.ts'))
     const createIntent = purchases.slice(
@@ -89,7 +99,7 @@ describe('integration boundaries hold', () => {
   it('reaches the Nimiq SDK only through the adapter', () => {
     const offenders = ALL.filter(
       (file) =>
-        !file.includes(join('lib', 'nimiq')) && code(file).includes('@nimiq/mini-app-sdk'),
+        !file.includes(join('lib', 'nimiq')) && /@nimiq\//.test(code(file)),
     )
     expect(offenders).toEqual([])
   })
@@ -113,7 +123,20 @@ describe('integration boundaries hold', () => {
   it('keeps authentication out of browser storage', () => {
     // The session is an httpOnly cookie; nothing auth-shaped belongs in
     // storage a script can read (docs/09-SECURITY.md §62).
-    const offenders = ALL.filter((file) => /localStorage|sessionStorage/.test(code(file)))
+    //
+    // The two exceptions are both per-viewer conveniences that carry no
+    // identity and no authority:
+    //   use-purchase-flow    a transaction hash kept as a recovery hint, which
+    //                        the backend re-verifies from the chain anyway
+    //   use-purchase-success which purchases have already been congratulated,
+    //                        so a refresh does not reopen the dialog
+    // Losing either changes nothing a customer can be harmed by.
+    const allowed = [join('hooks', 'use-purchase-flow.ts'), join('hooks', 'use-purchase-success.ts')]
+    const offenders = ALL.filter(
+      (file) =>
+        /localStorage|sessionStorage/.test(code(file)) &&
+        !allowed.some((exception) => file.endsWith(exception)),
+    )
     expect(offenders).toEqual([])
   })
 

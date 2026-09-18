@@ -8,6 +8,7 @@ import { SessionProvider } from '@/app/session-provider'
 import { WalletContext, type WalletContextValue } from '@/app/wallet-context'
 import { WalletProvider } from '@/app/wallet-provider'
 import { routes } from '@/app/router'
+import { ToastProvider } from '@/components/ui/toast'
 import type { AuthSession } from '@/types/auth'
 import { NO_CAPABILITIES } from '@/types/wallet'
 
@@ -26,7 +27,9 @@ export function renderWithProviders(ui: ReactElement): RenderResult {
   return render(
     <QueryClientProvider client={queryClient}>
       <WalletProvider>
-        <SessionProvider>{ui}</SessionProvider>
+        <SessionProvider>
+          <ToastProvider>{ui}</ToastProvider>
+        </SessionProvider>
       </WalletProvider>
     </QueryClientProvider>,
   )
@@ -76,11 +79,13 @@ export function stubWallet(overrides: Partial<WalletContextValue> = {}): WalletC
       nimiqProviderAvailable: true,
       walletOperationsAvailable: true,
       insideNimiqPay: true,
+      transport: 'mini-app',
     },
     network: 'TESTNET',
     account: 'NQ07 0000 0000 0000 0000 0000 0000 0000 0081',
     error: null,
     refresh: async () => {},
+    noteAccount: () => {},
     ...overrides,
   }
 }
@@ -111,11 +116,13 @@ export function renderApp(
 
   const result = render(
     <QueryClientProvider client={queryClient}>
-      {options.wallet ? (
-        <WalletContext.Provider value={options.wallet}>{withSession}</WalletContext.Provider>
-      ) : (
-        <WalletProvider>{withSession}</WalletProvider>
-      )}
+      <ToastProvider>
+        {options.wallet ? (
+          <WalletContext.Provider value={options.wallet}>{withSession}</WalletContext.Provider>
+        ) : (
+          <WalletProvider>{withSession}</WalletProvider>
+        )}
+      </ToastProvider>
     </QueryClientProvider>,
   )
   return { ...result, router }

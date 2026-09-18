@@ -1,5 +1,12 @@
-import type { AuthChallenge } from '@/types/auth'
-import type { Package, Provider, Service, ServiceStatus } from '@/types/domain'
+import type { AuthChallenge, SigningScheme } from '@/types/auth'
+import type {
+  Category,
+  Pass,
+  PassAccent,
+  Provider,
+  Service,
+  ServiceStatus,
+} from '@/types/domain'
 
 import { apiRequest } from './client'
 
@@ -28,18 +35,51 @@ export function getMyProvider(providerId: string, signal?: AbortSignal): Promise
 }
 
 /**
+ * The editable half of a provider profile (`ProviderInput`).
+ *
+ * The optional fields carry three distinct meanings, and the contract keeps
+ * them apart: omitted (or null) preserves what is stored, `''` clears it, and a
+ * value replaces it. So a form that edits one field must not send the others as
+ * empty strings — that would erase them.
+ *
+ * `slug` is accepted only at creation; it is immutable afterwards, and a
+ * rename never moves it.
+ */
+export interface ProviderProfileInput {
+  name: string
+  headline?: string | null
+  bio?: string | null
+  avatarUrl?: string | null
+  avatarVariant?: number | null
+  location?: string | null
+}
+
+function providerBody(input: ProviderProfileInput & { slug?: string | null }) {
+  return {
+    name: input.name,
+    ...(input.slug !== undefined ? { slug: input.slug } : {}),
+    ...(input.headline !== undefined ? { headline: input.headline } : {}),
+    ...(input.bio !== undefined ? { bio: input.bio } : {}),
+    ...(input.avatarUrl !== undefined ? { avatarUrl: input.avatarUrl } : {}),
+    ...(input.avatarVariant !== undefined ? { avatarVariant: input.avatarVariant } : {}),
+    ...(input.location !== undefined ? { location: input.location } : {}),
+  }
+}
+
+/**
  * POST /providers → 201 `Provider`
  *
- * Body is `ProviderInput`: `{ name }`. This is the whole profile the contract
- * accepts today.
+ * Body is `ProviderInput`. Omitting `slug` lets the backend generate a readable
+ * one, which is what the workspace does: a provider should not have to invent a
+ * URL to exist.
  */
 export function createProvider(
-  input: { name: string },
+  input: ProviderProfileInput & { slug?: string | null },
   options: { signal?: AbortSignal } = {},
 ): Promise<Provider> {
   return apiRequest<Provider>('/api/v1/providers', {
     method: 'POST',
-    body: { name: input.name },
+    body: providerBody(input),
     signal: options.signal,
   })
 }
@@ -53,12 +93,14 @@ export function createProvider(
  */
 export function updateMyProviderProfile(
   providerId: string,
-  input: { name: string },
+  input: ProviderProfileInput,
   options: { signal?: AbortSignal } = {},
 ): Promise<Provider> {
   return apiRequest<Provider>(`/api/v1/providers/${encodeURIComponent(providerId)}`, {
     method: 'PATCH',
-    body: { name: input.name },
+    // No `slug`: it is immutable after creation, so sending it at all would be
+    // asking for a change the contract does not allow.
+    body: providerBody(input),
     signal: options.signal,
   })
 }
@@ -103,12 +145,24 @@ export function verifyPayoutWallet(
     signature: string
     ownerPublicKey: string
     ownerSignature: string
+    /**
+     * Which documented preprocessing produced both signatures, when the wallet
+     * transport documents one. Both proofs come from the same transport in one
+     * ceremony, so one value covers them; omitted, the backend verifies under
+     * its configured default.
+     */
+    signingScheme?: SigningScheme | null
   },
   options: { signal?: AbortSignal } = {},
 ): Promise<Provider> {
+  const { signingScheme, ...proof } = input
   return apiRequest<Provider>(
     `/api/v1/providers/${encodeURIComponent(providerId)}/payout-verifications`,
-    { method: 'POST', body: input, signal: options.signal },
+    {
+      method: 'POST',
+      body: { ...proof, ...(signingScheme ? { signingScheme } : {}) },
+      signal: options.signal,
+    },
   )
 }
 
@@ -133,12 +187,15 @@ export function getMyService(id: string, signal?: AbortSignal): Promise<Service>
 /**
  * POST /providers/{providerID}/services → 201 `Service` (DRAFT)
  *
- * Body is `ServiceInput`: `{ name, description? }`. A new service starts as a
- * draft; publishing a package later requires it to be ACTIVE.
+ * Body is `ServiceInput`: `{ name, description?, category? }`. A new service
+ * starts as a draft; publishing a pass later requires it to be ACTIVE.
+ *
+ * The category is the taxonomy value discovery filters on, and it lives on the
+ * service — a pass inherits its service's category rather than carrying one.
  */
 export function createService(
   providerId: string,
-  input: { name: string; description?: string },
+  input: { name: string; description?: string; category?: Category },
   options: { signal?: AbortSignal } = {},
 ): Promise<Service> {
   return apiRequest<Service>(`/api/v1/providers/${encodeURIComponent(providerId)}/services`, {
@@ -146,6 +203,7 @@ export function createService(
     body: {
       name: input.name,
       ...(input.description ? { description: input.description } : {}),
+      ...(input.category !== undefined ? { category: input.category } : {}),
     },
     signal: options.signal,
   })
@@ -160,7 +218,7 @@ export function createService(
  */
 export function updateService(
   id: string,
-  input: { name: string; description?: string; status: ServiceStatus },
+  input: { name: string; description?: string; status: ServiceStatus; category?: Category },
   options: { signal?: AbortSignal } = {},
 ): Promise<Service> {
   return apiRequest<Service>(`/api/v1/services/${encodeURIComponent(id)}`, {
@@ -168,15 +226,19 @@ export function updateService(
     body: {
       name: input.name,
       ...(input.description ? { description: input.description } : {}),
+      // Sent whenever the caller decided one, `''` included: the form always
+      // knows the category, and an omitted value would mean "keep whatever is
+      // stored", which is not what an edited form is saying.
+      ...(input.category !== undefined ? { category: input.category } : {}),
       status: input.status,
     },
     signal: options.signal,
   })
 }
 
-/* -- Packages ------------------------------------------------------------ */
+/* -- Passes ------------------------------------------------------------ */
 
-export interface PackageInput {
+export interface PassInput {
   title: string
   description?: string
   /** Whole sessions, minimum 1. */
@@ -185,81 +247,131 @@ export interface PackageInput {
   priceLuna: number
   /** Optional fixed UTC expiry instant, or null for none. */
   expirationAt?: string | null
+  /** Optional visual identity for pass details. */
+  accent?: PassAccent | null
+  /** Cover from POST /media, or null to clear. */
+  coverMediaId?: string | null
 }
 
-/** GET /providers/{providerID}/packages → `{ items: Package[] }`. */
-export function listMyPackages(
+/** GET /providers/{providerID}/passes → `{ items: Pass[] }`. */
+export function listMyCatalogPasses(
   providerId: string,
   signal?: AbortSignal,
-): Promise<{ items: Package[] }> {
-  return apiRequest<{ items: Package[] }>(
-    `/api/v1/providers/${encodeURIComponent(providerId)}/packages`,
+): Promise<{ items: Pass[] }> {
+  return apiRequest<{ items: Pass[] }>(
+    `/api/v1/providers/${encodeURIComponent(providerId)}/passes`,
     { signal },
   )
 }
 
-/** GET /packages/{packageID} → `Package`. */
-export function getMyPackage(id: string, signal?: AbortSignal): Promise<Package> {
-  return apiRequest<Package>(`/api/v1/packages/${encodeURIComponent(id)}`, { signal })
+/** GET /catalog/passes/{passID} → `Pass`. */
+export function getMyCatalogPass(id: string, signal?: AbortSignal): Promise<Pass> {
+  return apiRequest<Pass>(`/api/v1/catalog/passes/${encodeURIComponent(id)}`, { signal })
 }
 
-/** POST /providers/{providerID}/services/{serviceID}/packages → 201 `Package` (DRAFT). */
-export function createPackage(
+/** POST /providers/{providerID}/services/{serviceID}/passes → 201 `Pass` (DRAFT). */
+export function createPass(
   providerId: string,
   serviceId: string,
-  input: PackageInput,
+  input: PassInput,
   options: { signal?: AbortSignal } = {},
-): Promise<Package> {
-  return apiRequest<Package>(
-    `/api/v1/providers/${encodeURIComponent(providerId)}/services/${encodeURIComponent(serviceId)}/packages`,
-    { method: 'POST', body: packageBody(input), signal: options.signal },
+): Promise<Pass> {
+  return apiRequest<Pass>(
+    `/api/v1/providers/${encodeURIComponent(providerId)}/services/${encodeURIComponent(serviceId)}/passes`,
+    { method: 'POST', body: passBody(input), signal: options.signal },
   )
 }
 
 /**
- * PATCH /packages/{packageID} → 200 `Package`
+ * PATCH /catalog/passes/{passID} → 200 `Pass`
  *
- * Draft and unavailable packages only — the spec makes published packages
- * immutable, and a 409 says so. That is the package-snapshot principle enforced
+ * Draft and unavailable passes only — the spec makes published passes
+ * immutable, and a 409 says so. That is the pass-snapshot principle enforced
  * at the source: an edit must not be able to change what someone already bought
  * (docs/01-PRODUCT.md §19).
  */
-export function updatePackage(
+export function updatePass(
   id: string,
-  input: PackageInput,
+  input: PassInput,
   options: { signal?: AbortSignal } = {},
-): Promise<Package> {
-  return apiRequest<Package>(`/api/v1/packages/${encodeURIComponent(id)}`, {
+): Promise<Pass> {
+  return apiRequest<Pass>(`/api/v1/catalog/passes/${encodeURIComponent(id)}`, {
     method: 'PATCH',
-    body: packageBody(input),
+    body: passBody(input),
     signal: options.signal,
   })
 }
 
-function packageBody(input: PackageInput) {
+function passBody(input: PassInput) {
   return {
     title: input.title,
     ...(input.description ? { description: input.description } : {}),
     sessions: input.sessions,
     priceLuna: input.priceLuna,
     ...(input.expirationAt !== undefined ? { expirationAt: input.expirationAt } : {}),
+    ...(input.accent !== undefined ? { accent: input.accent } : {}),
+    ...(input.coverMediaId !== undefined ? { coverMediaId: input.coverMediaId } : {}),
   }
 }
 
 /**
- * POST /packages/{packageID}/publish → 200 `Package`
+ * POST /catalog/passes/{passID}/publish → 200 `Pass`
  *
- * The backend requires an active service, a valid package and a *verified*
+ * The backend requires an active service, a valid pass and a *verified*
  * payout wallet, and answers 409 when any of those is missing. The workspace
  * explains those conditions, but this call is what decides
  * (docs/08-ARCHITECTURE.md §147).
  */
-export function publishPackage(
+export function publishPass(
   id: string,
   options: { signal?: AbortSignal } = {},
-): Promise<Package> {
-  return apiRequest<Package>(`/api/v1/packages/${encodeURIComponent(id)}/publish`, {
+): Promise<Pass> {
+  return apiRequest<Pass>(`/api/v1/catalog/passes/${encodeURIComponent(id)}/publish`, {
     method: 'POST',
+    signal: options.signal,
+  })
+}
+
+/**
+ * POST /catalog/passes/{passID}/unpublish → 200 `Pass` with `status: 'UNAVAILABLE'`
+ *
+ * Takes a Pass off the shelf without ending it. It leaves Discover, the
+ * provider's public storefront and the provider directory's count, loses its
+ * public page and stops accepting purchases — and keeps its id, its data and
+ * its place in the owner's own catalogue, so `publishPass` puts it back
+ * (docs/08-ARCHITECTURE.md §34, §136).
+ *
+ * Deliberately not `deletePass` with a flag. They are different acts with
+ * different consequences, and the contract keeps them on different routes.
+ *
+ * Idempotent: a Pass that is already unpublished answers 200 unchanged, so a
+ * repeated request is not an error the provider has to interpret.
+ *
+ * Authorisation is the backend's: a Pass this session does not own answers 404
+ * (docs/09-SECURITY.md §33).
+ */
+export function unpublishPass(id: string, options: { signal?: AbortSignal } = {}): Promise<Pass> {
+  return apiRequest<Pass>(`/api/v1/catalog/passes/${encodeURIComponent(id)}/unpublish`, {
+    method: 'POST',
+    signal: options.signal,
+  })
+}
+
+/**
+ * DELETE /catalog/passes/{passID} → 200 `Pass` with `status: 'ARCHIVED'`
+ *
+ * Deleting a Pass, as the provider means it: it stops being sellable, leaves
+ * their catalogue and leaves Discover. The backend archives rather than removes
+ * the row, because purchases, verified payments and already-purchased customer
+ * passes reference it — so the response is the archived Pass rather than a 204,
+ * and that is deliberate (docs/08-ARCHITECTURE.md §135-§136).
+ *
+ * Authorisation is the backend's: a Pass this session does not own answers 404,
+ * whatever the caller renders (docs/09-SECURITY.md §33).
+ */
+export function deletePass(id: string, options: { signal?: AbortSignal } = {}): Promise<Pass> {
+  return apiRequest<Pass>(`/api/v1/catalog/passes/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
     signal: options.signal,
   })
 }

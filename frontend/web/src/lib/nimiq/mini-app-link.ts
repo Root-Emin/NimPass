@@ -1,10 +1,10 @@
 /**
  * The browser → Nimiq Pay handoff.
  *
- * Nimpass is web-first, so a customer can meet a package in an ordinary browser
+ * Nimpass is web-first, so a customer can meet a pass in an ordinary browser
  * where no wallet exists. docs/04-NIMIQ-MINI-APPS.md §41-§44 and
  * docs/05-NIMIQ-PAY-INTEGRATION.md §81-§84 ask for that visit to *continue* in
- * Nimiq Pay on the same package rather than restart on a homepage.
+ * Nimiq Pay on the same pass rather than restart on a homepage.
  *
  * The Developer Center documents two openers (re-checked September 2026):
  *
@@ -18,7 +18,7 @@
  * (§40: do not hardcode stale examples).
  *
  * What travels in the link is a route, never money. The path carries the
- * package identifier and nothing else: query and fragment are dropped, so no
+ * pass identifier and nothing else: query and fragment are dropped, so no
  * recipient, price or quantity can be smuggled through the handoff and treated
  * as authoritative on the far side (docs/05 §85). Those values are re-read from
  * the backend inside the wallet-capable flow (§84).
@@ -64,7 +64,7 @@ export function miniAppOpenerUrl(href: string = currentHref()): string | null {
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return null
   if (!isPubliclyReachable(url.hostname)) return null
 
-  // `host` keeps a non-default port; `pathname` keeps the package route. The
+  // `host` keeps a non-default port; `pathname` keeps the pass route. The
   // trailing slash of a root path is dropped so the opener gets `example.com`
   // rather than `example.com/`.
   const path = url.pathname === '/' ? '' : url.pathname

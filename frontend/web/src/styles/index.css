@@ -4,57 +4,81 @@
  * Nimpass design tokens.
  *
  * Binding source: docs/03-DESIGN-SYSTEM.md
- *   §16 Base Theme      — light, warm off-white page / white surfaces
- *   §18 Accent Color    — one restrained accent, used sparingly
- *   §19 Semantic Colors — standard, never colour alone
- *   §23 Typography      — display → micro scale
- *   §27 Border Radius   — 8 / 12 / 16 / 20-24 / pill
- *   §28 Shadows         — soft, wide, low opacity
- *   §97 Design Tokens   — centralised here, never scattered in components
+ *   §11 Container widths  — content never fills every pixel
+ *   §13 Spacing scale     — multiples of 4
+ *   §16 Base Theme        — light, warm off-white page / white surfaces
+ *   §18 Accent Color      — one restrained accent, used sparingly
+ *   §19 Semantic Colors   — standard, never colour alone
+ *   §23 Typography        — display → micro, scaling down on small screens
+ *   §27 Border Radius     — 8 / 12 / 16 / 20 / 24 / 32 / pill
+ *   §28 Shadows           — soft, wide, low opacity
+ *   §53 Digital pass      — the pass is an object, so it gets its own surface
+ *   §97 Design Tokens     — centralised here, never scattered in components
  *
  * There is intentionally no dark theme: §17 makes the light theme the
- * source-of-truth visual identity for the competition MVP.
+ * source-of-truth visual identity for the competition MVP. The one dark
+ * surface in the product is the pass itself, and that is identity, not a theme.
  */
 @theme {
-  /* ---- Surfaces & text ------------------------------------------------ */
-  --color-canvas: #faf9f7;
-  --color-canvas-sunken: #f4f2ee;
+  /* ---- Surfaces & text ------------------------------------------------
+   * A warm paper ground rather than white, with three tonal steps above it.
+   * Depth comes from these steps and from spacing — not from shadows (§28)
+   * and not from drawing a border around everything (§26).
+   */
+  --color-canvas: #faf8f5;
+  --color-canvas-sunken: #f2eee7;
   --color-surface: #ffffff;
-  --color-surface-muted: #f7f6f3;
-  --color-surface-inset: #f1efeb;
+  --color-surface-muted: #f7f4ef;
+  --color-surface-inset: #eeeae2;
 
-  --color-ink: #1a1917;
-  --color-ink-muted: #5f5b54;
-  --color-ink-subtle: #8b867d;
+  --color-ink: #191712;
+  --color-ink-muted: #5c574d;
+  --color-ink-subtle: #8a8376;
   --color-ink-inverse: #fbfaf8;
 
-  --color-line: #e7e4dd;
-  --color-line-strong: #d8d4cb;
+  --color-line: #e7e2d9;
+  --color-line-strong: #d5cfc3;
 
   /* ---- Accent ---------------------------------------------------------
-   * A deep, desaturated teal. Reads premium on warm neutrals, holds
-   * AA contrast on white, and is deliberately nothing like the neon
-   * palettes §20 rules out.
+   * A deep, desaturated pine. Reads premium on warm neutrals, holds AA
+   * contrast on white, and is deliberately nothing like the neon palettes
+   * §20 rules out. Reserved for primary action, identity, status and focus.
    */
-  --color-accent: #0f6b5f;
-  --color-accent-hover: #0c574d;
-  --color-accent-soft: #e6f1ef;
-  --color-accent-border: #bcd9d4;
+  --color-accent: #0e6a58;
+  --color-accent-hover: #0a5447;
+  --color-accent-soft: #e5f0ed;
+  --color-accent-border: #b7d6ce;
 
-  /* ---- Semantic ------------------------------------------------------- */
-  --color-success: #1f7a4d;
-  --color-success-soft: #e7f3ec;
-  --color-warning: #9a6412;
-  --color-warning-soft: #fbf1df;
-  --color-danger: #a33228;
-  --color-danger-soft: #fbeceb;
+  /* ---- The pass surface (§50, §53) ------------------------------------
+   * The one dark surface in Nimpass. A pass is an object the customer owns,
+   * and giving it its own material is what separates "my pass" from "a card
+   * on a page". Deep pine rather than black, so it belongs to the accent
+   * family; no metallic gradient, no fake card numbers, no NFT sheen (§53).
+   */
+  --color-pass: #10312a;
+  --color-pass-raised: #17423a;
+  --color-pass-line: #2c554c;
+  --color-pass-ink: #f1f7f4;
+  --color-pass-ink-muted: #9cbdb3;
+
+  /* ---- Semantic (§19) -------------------------------------------------- */
+  --color-success: #1d7449;
+  --color-success-soft: #e6f2eb;
+  --color-warning: #92600f;
+  --color-warning-soft: #faf0dd;
+  --color-danger: #a13127;
+  --color-danger-soft: #fbebea;
   --color-info: #33557a;
   --color-info-soft: #edf2f8;
 
-  /* ---- Typography ----------------------------------------------------- */
+  /* ---- Typography (§21-§24) -------------------------------------------
+   * Headings scale with the viewport so a desktop page can open large
+   * without a phone inheriting a 64px headline. Body sizes stay fixed —
+   * fluid body copy just makes line length unpredictable.
+   */
   --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
     Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --font-display: 'Plus Jakarta Sans', 'Inter', ui-sans-serif, system-ui,
+  --font-display: 'Instrument Sans', 'Inter', ui-sans-serif, system-ui,
     -apple-system, 'Segoe UI', Roboto, sans-serif;
 
   --text-micro: 0.75rem;
@@ -65,16 +89,22 @@
   --text-body--line-height: 1.6rem;
   --text-body-lg: 1.0625rem;
   --text-body-lg--line-height: 1.75rem;
-  --text-lead: 1.1875rem;
-  --text-lead--line-height: 1.9rem;
-  --text-h3: 1.375rem;
-  --text-h3--line-height: 1.85rem;
-  --text-h2: 1.75rem;
-  --text-h2--line-height: 2.2rem;
-  --text-h1: 2.25rem;
-  --text-h1--line-height: 2.6rem;
-  --text-display: 3rem;
-  --text-display--line-height: 3.25rem;
+  --text-lead: clamp(1.125rem, 1.02rem + 0.42vw, 1.3125rem);
+  --text-lead--line-height: 1.55;
+
+  --text-h3: clamp(1.3125rem, 1.24rem + 0.3vw, 1.5rem);
+  --text-h3--line-height: 1.3;
+  --text-h2: clamp(1.625rem, 1.44rem + 0.75vw, 2rem);
+  --text-h2--line-height: 1.22;
+  --text-h1: clamp(2rem, 1.62rem + 1.55vw, 2.75rem);
+  --text-h1--line-height: 1.14;
+  --text-display: clamp(2.5rem, 1.73rem + 3.1vw, 4rem);
+  --text-display--line-height: 1.05;
+
+  /* Session counts and prices. Large, tight, tabular — the number is the
+     message (§51, §123). */
+  --text-figure: clamp(3.5rem, 2.2rem + 5.2vw, 5.5rem);
+  --text-figure--line-height: 1;
 
   /* ---- Radius (§27) --------------------------------------------------- */
   --radius-sm: 0.5rem;
@@ -82,22 +112,116 @@
   --radius-lg: 1rem;
   --radius-xl: 1.25rem;
   --radius-2xl: 1.5rem;
+  --radius-3xl: 2rem;
 
   /* ---- Shadows (§28) — soft, wide, low opacity ------------------------ */
-  --shadow-soft: 0 1px 2px rgb(26 25 23 / 0.04), 0 1px 3px rgb(26 25 23 / 0.03);
-  --shadow-lift: 0 2px 4px rgb(26 25 23 / 0.04), 0 12px 28px -12px rgb(26 25 23 / 0.12);
-  --shadow-raised: 0 4px 10px rgb(26 25 23 / 0.05), 0 24px 48px -24px rgb(26 25 23 / 0.18);
+  --shadow-soft: 0 1px 2px rgb(25 23 18 / 0.04), 0 1px 3px rgb(25 23 18 / 0.03);
+  --shadow-lift: 0 2px 4px rgb(25 23 18 / 0.04), 0 14px 30px -14px rgb(25 23 18 / 0.14);
+  --shadow-raised: 0 4px 10px rgb(25 23 18 / 0.05), 0 28px 56px -28px rgb(25 23 18 / 0.2);
+  --shadow-pass: 0 2px 6px rgb(16 49 42 / 0.12), 0 32px 60px -30px rgb(16 49 42 / 0.45);
 
   /* ---- Containers (§11) ----------------------------------------------- */
+  --container-narrow: 34rem; /* 544px — focused forms */
   --container-reading: 46rem; /* 736px — detail / reading content */
   --container-content: 72rem; /* 1152px — general content */
   --container-wide: 84rem; /* 1344px — dense operational surfaces */
 
-  /* ---- Motion (§86) --------------------------------------------------- */
+  /*
+   * Space the overlay header occupies: 10px above the pill, 56px pill,
+   * 10px below, plus the Mini App safe area. Inner pages pad by this so
+   * titles clear the floating bar; the home hero pulls the same amount
+   * back so the scatter can sit underneath it.
+   */
+  --header-offset: calc(0.625rem + 3.5rem + 0.625rem + env(safe-area-inset-top, 0px));
+
+  /* ---- Motion (§85-§86) -----------------------------------------------
+   * Most motion lands between 150 and 250ms. Anything slower has to earn it:
+   * only the reveal and the session-count change run to 260ms, because both
+   * are describing a change of state rather than acknowledging a click.
+   *
+   * The named animations below are the complete vocabulary. There is no
+   * looping background, no glow and no spring — §85 rules all three out, and a
+   * product that handles money should feel smooth rather than animated.
+   */
   --nimpass-duration-fast: 120ms;
   --nimpass-duration-base: 180ms;
   --nimpass-duration-slow: 260ms;
   --nimpass-ease: cubic-bezier(0.2, 0.8, 0.3, 1);
+
+  --animate-fade-in: fade-in var(--nimpass-duration-base) var(--nimpass-ease) both;
+  --animate-fade-out: fade-out var(--nimpass-duration-fast) ease-in both;
+  --animate-rise: rise var(--nimpass-duration-slow) var(--nimpass-ease) both;
+  --animate-tile-in: tile-in var(--nimpass-duration-slow) var(--nimpass-ease) both;
+  --animate-dialog-in: dialog-in var(--nimpass-duration-base) var(--nimpass-ease) both;
+  --animate-dialog-out: dialog-out var(--nimpass-duration-fast) ease-in both;
+  --animate-count-change: count-change var(--nimpass-duration-slow) var(--nimpass-ease) both;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+/* Content arriving as it scrolls into view. 10px, once, never on the way out. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+@keyframes tile-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+}
+
+/*
+ * Every popup — dialog, confirmation, menu — arrives centred over a blurred
+ * page, so the motion is a settle rather than a direction: a couple of pixels
+ * of rise and a hair of scale. Centring is layout now (see DialogPositioner),
+ * which is what frees `transform` to be purely the animation.
+ */
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes dialog-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+
+/*
+ * A redemption moving 7 → 6 (§57). The number is replaced, so the new one
+ * arrives rather than the old one leaving — a small rise, no bounce, no
+ * celebration.
+ */
+@keyframes count-change {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
 }
 
 @layer base {
@@ -120,15 +244,22 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
+    /* Inter's straight-sided l and single-storey a read better at UI sizes. */
+    font-feature-settings: 'cv05' 1, 'cv11' 1;
   }
 
+  /*
+   * Headings are the hierarchy (§21). Weight stays restrained — 600 at the
+   * heaviest — and tracking tightens as size grows, which is what keeps a
+   * large heading from looking loose (§24).
+   */
   h1,
   h2,
   h3,
   h4 {
     font-family: var(--font-display);
     font-weight: 600;
-    letter-spacing: -0.018em;
+    letter-spacing: -0.02em;
     text-wrap: balance;
   }
 
@@ -159,4 +290,113 @@
 
 @utility text-balance {
   text-wrap: balance;
+}
+
+/* Long paragraphs break better on a phone with pretty wrapping. */
+@utility text-pretty {
+  text-wrap: pretty;
+}
+
+/*
+ * The small uppercase label above a heading — service name, section kicker,
+ * status group. One place, because it appears on nearly every screen and
+ * drifting letter-spacing is exactly the inconsistency §97 exists to prevent.
+ */
+@utility eyebrow {
+  font-size: var(--text-micro);
+  line-height: var(--text-micro--line-height);
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* Counts and prices line up in columns only if their digits do. */
+@utility numeric {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/*
+ * The landing page's one flourish (docs/03-DESIGN-SYSTEM.md §110: Home is
+ * where the Luma influence runs strongest).
+ *
+ * Three stops from the mark palette — pine, clay, amber — so the sweep is the
+ * product's own earth range rather than the neon magenta §20 rules out. Every
+ * stop clears 4.5:1 on the canvas, so the line stays readable if the gradient
+ * never paints.
+ */
+@utility gradient-ink {
+  background-image: linear-gradient(95deg, #0e6a58 0%, #8a4f38 52%, #8a6118 100%);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+
+  /* Forced-colours mode replaces the palette wholesale; transparent text would
+     simply vanish there. */
+  @media (forced-colors: active) {
+    background-image: none;
+    color: CanvasText;
+  }
+}
+
+/*
+ * The punch row, enlarged into a field.
+ *
+ * Nimpass's answer to the dotted world map on Luma's closing panel: the same
+ * quiet texture, made of the product's own motif. Decorative only — callers
+ * set the colour and fade it at the edges with a mask.
+ */
+@utility dot-field {
+  background-image: radial-gradient(currentColor 1.5px, transparent 1.6px);
+  background-size: 22px 22px;
+}
+
+/*
+ * A number field whose value is right-aligned has nowhere to put the browser's
+ * stepper — it lands on top of the digits. The arrows are removed rather than
+ * the alignment, because the alignment is what makes a column of figures
+ * readable (§123). Keyboard and touch entry are unaffected.
+ */
+@utility no-spinner {
+  appearance: textfield;
+
+  &::-webkit-inner-spin-button,
+  &::-webkit-outer-spin-button {
+    margin: 0;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+}
+
+/*
+ * The floating nav pill. Translucency lives only here — one material on one
+ * element, not glassmorphism as a product style (docs/03-DESIGN-SYSTEM.md).
+ * Content (the hero scatter) is meant to read through it.
+ */
+@utility nav-glass {
+  background: rgb(255 255 255 / 0.38);
+  backdrop-filter: blur(28px) saturate(1.85);
+  -webkit-backdrop-filter: blur(28px) saturate(1.85);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.78),
+    inset 0 -1px 0 rgb(255 255 255 / 0.18),
+    0 8px 28px -18px rgb(25 23 18 / 0.28);
+
+  &[data-scrolled='true'] {
+    background: rgb(255 255 255 / 0.58);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.82),
+      0 2px 4px rgb(25 23 18 / 0.04),
+      0 14px 30px -14px rgb(25 23 18 / 0.16);
+  }
+
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    background: rgb(255 255 255 / 0.94);
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    background: rgb(255 255 255 / 0.94);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }

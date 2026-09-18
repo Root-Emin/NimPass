@@ -39,7 +39,7 @@ function splitLuna(luna: Luna): { negative: boolean; whole: number; fraction: st
  * never re-derived from this string (docs/08-ARCHITECTURE.md §75).
  *
  * Every Luna the amount actually contains is shown. Rounding the display would
- * mean a package priced at 0.00001 NIM reading as "0 NIM", and the package form
+ * mean a pass priced at 0.00001 NIM reading as "0 NIM", and the pass form
  * accepts exactly that precision — a price the customer sees must be the price
  * they are charged (docs/03-DESIGN-SYSTEM.md §123).
  */
@@ -79,7 +79,7 @@ export function lunaToNimInput(luna: Luna): string {
 /**
  * The per-session price, in Luna.
  *
- * Presentation only — the backend never charges this, it charges the package
+ * Presentation only — the backend never charges this, it charges the pass
  * price. Rounded to whole Luna because Luna is indivisible.
  */
 export function perSessionLuna(priceLuna: Luna, sessionCount: number): Luna | null {
@@ -87,10 +87,6 @@ export function perSessionLuna(priceLuna: Luna, sessionCount: number): Luna | nu
   return Math.round(priceLuna / sessionCount)
 }
 
-/**
- * Shortens a wallet address for the compact wallet control.
- * Full addresses are never shown unless the user asks (docs/03 §33, §92).
- */
 /**
  * Compare-safe form of a Nimiq address.
  *
@@ -102,6 +98,11 @@ export function normaliseAddress(address: string): string {
   return address.replace(/\s+/g, '').toUpperCase()
 }
 
+/**
+ * Shortens a wallet address for secondary copy (profile sheet, payout).
+ * The signed-in header says Profile; it does not display the address.
+ * Full addresses are never shown unless the user asks (docs/03 §33, §92).
+ */
 export function shortenAddress(address: string): string {
   const compact = address.replace(/\s+/g, '')
   if (compact.length <= 8) return compact
@@ -166,12 +167,55 @@ export function initialsOf(name: string): string {
 }
 
 /**
- * Human phrasing for a package's absolute expiry date.
+ * Human phrasing for a pass's absolute expiry date.
  *
  * `domain.ExpirationPolicy` is an optional fixed UTC date, not a duration —
  * its own comment says a relative-duration policy "needs a separate product
  * decision before use", so nothing here converts one into days.
+ *
+ * It takes a date rather than `string | null` on purpose: a pass with no
+ * expiry says nothing about expiry anywhere in the product, so there is no
+ * phrase for the absence of one and no way to print it by accident.
  */
-export function formatExpiry(expiresAt: string | null): string {
-  return expiresAt ? `Valid until ${formatDate(expiresAt)}` : 'No expiry date'
+export function formatExpiry(expiresAt: string): string {
+  return `Valid until ${formatDate(expiresAt)}`
+}
+
+/** Month heading for a grouped timeline — "September 2026". */
+export function formatMonth(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return '—'
+  return new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric' }).format(date)
+}
+
+/**
+ * The readable head of an identifier.
+ *
+ * A pass id is a UUID, and printing all 36 characters on the detail panel
+ * buries the facts that matter underneath it. This shows the first block — a
+ * real prefix of the real id, never a re-formatted or invented reference code —
+ * and callers put the full value in a `title` so it can still be read out.
+ */
+export function shortenId(id: string): string {
+  const head = id.split('-')[0] ?? id
+  return head.toUpperCase()
+}
+
+/**
+ * A Nimiq transaction hash, short enough to sit on one line.
+ *
+ * `shortenId` is for UUIDs: it takes the text before the first hyphen, and a
+ * transaction hash has none — so it returned all 64 characters, which on the
+ * payment success screen was a three-line wall of hex where a quiet receipt
+ * line was meant to be.
+ *
+ * Head and tail rather than a prefix, because that is how a hash is recognised
+ * against a block explorer. It is a real substring of the real hash, never a
+ * re-formatted or invented reference; callers put the whole value in a `title`
+ * so it can still be read out in full.
+ */
+export function shortenHash(hash: string): string {
+  const value = hash.trim()
+  if (value.length <= 20) return value
+  return `${value.slice(0, 8)}…${value.slice(-8)}`
 }

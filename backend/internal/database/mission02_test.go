@@ -128,19 +128,34 @@ func TestMission02DatabaseLifecycleAndSecurity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Born paid-into: the login proof is what establishes control of this
+	// wallet, so the provider has a verified payout destination before it has
+	// anything to sell, and the address is the session's rather than one any
+	// caller named (ADR-025).
+	if string(provider.PayoutWallet) != wallet || provider.PayoutVerifiedAt == nil {
+		t.Fatalf("owner payout adoption: %+v", provider)
+	}
+	if !provider.CanReceivePayments() {
+		t.Fatal("adopted payout wallet cannot receive payments")
+	}
 	service, err := catalog.CreateService(ctx, session.Identity, provider.ID, "Yoga", "Classes")
 	if err != nil {
 		t.Fatal(err)
 	}
 	expires := time.Now().Add(30 * 24 * time.Hour).UTC()
-	pack, err := catalog.CreatePackage(ctx, session.Identity, provider.ID, service.ID, "Ten sessions", "Yoga package", 10, 12_340_000, &expires)
+	pass, err := catalog.CreatePass(ctx, session.Identity, provider.ID, service.ID, "Ten sessions", "Yoga sessions", 10, 12_340_000, &expires, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := catalog.PublishPackage(ctx, session.Identity, pack.ID); !errors.Is(err, application.ErrConflict) {
+	// The payout gate itself. A provider now arrives verified, so the only way
+	// left to reach the refusal is to take the wallet away — which is still the
+	// state a provider is in if a change ceremony is ever started and left
+	// unfinished. The ceremony below puts a real one back.
+	assertExec(t, pool, `UPDATE providers SET payout_wallet=NULL,payout_verified_at=NULL WHERE id=$1`, provider.ID)
+	if _, err := catalog.PublishPass(ctx, session.Identity, pass.ID); !errors.Is(err, application.ErrConflict) {
 		t.Fatalf("unverified payout publish: %v", err)
 	}
-	public, err := catalogRepo.ListPublicPackages(ctx)
+	public, err := catalogRepo.ListPublicPasses(ctx, application.PublicPassFilter{})
 	if err != nil || len(public) != 0 {
 		t.Fatalf("draft leaked: %v %v", public, err)
 	}
@@ -175,25 +190,32 @@ func TestMission02DatabaseLifecycleAndSecurity(t *testing.T) {
 	if err := auth.VerifyPayout(ctx, session.Identity, provider.ID, payoutProof); !errors.Is(err, application.ErrConsumed) {
 		t.Fatalf("payout replay: %v", err)
 	}
-	if _, err := catalog.PublishPackage(ctx, session.Identity, pack.ID); err != nil {
+	if _, err := catalog.PublishPass(ctx, session.Identity, pass.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := catalog.PublishPackage(ctx, session.Identity, pack.ID); !errors.Is(err, application.ErrConflict) {
+	if _, err := catalog.PublishPass(ctx, session.Identity, pass.ID); !errors.Is(err, application.ErrConflict) {
 		t.Fatalf("double publish: %v", err)
 	}
-	public, err = catalogRepo.ListPublicPackages(ctx)
-	if err != nil || len(public) != 1 || public[0].Package.ID != pack.ID {
+	public, err = catalogRepo.ListPublicPasses(ctx, application.PublicPassFilter{})
+	if err != nil || len(public) != 1 || public[0].Pass.ID != pass.ID {
 		t.Fatalf("published discovery: %v %v", public, err)
 	}
-	if _, err := catalogRepo.GetPublicPackage(ctx, pack.ID); err != nil {
+	if _, err := catalogRepo.GetPublicPass(ctx, pass.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := catalogRepo.GetPublicProvider(ctx, provider.ID); err != nil {
 		t.Fatal(err)
 	}
+	// Two: the wallet adopted when the provider was created, and the one the
+	// ceremony above verified. Every payout assignment is audited whether or
+	// not a challenge was spent on it (docs/09-SECURITY.md §22).
 	var auditCount int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM provider_payout_audit WHERE provider_id=$1`, provider.ID).Scan(&auditCount); err != nil || auditCount != 1 {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM provider_payout_audit WHERE provider_id=$1`, provider.ID).Scan(&auditCount); err != nil || auditCount != 2 {
 		t.Fatalf("payout audit: %d %v", auditCount, err)
+	}
+	var adoptions int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM provider_payout_audit WHERE provider_id=$1 AND challenge_id IS NULL`, provider.ID).Scan(&adoptions); err != nil || adoptions != 1 {
+		t.Fatalf("adoption audit: %d %v", adoptions, err)
 	}
 	newWallet, newPub, newKey := missionKey(t)
 	replacement, err := auth.NewChallenge(ctx, application.VerifyProviderWallet, newWallet, provider.ID)
@@ -210,7 +232,7 @@ func TestMission02DatabaseLifecycleAndSecurity(t *testing.T) {
 	if err != nil || string(changed.PayoutWallet) != newWallet {
 		t.Fatalf("payout replacement: %v %v", changed, err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM provider_payout_audit WHERE provider_id=$1`, provider.ID).Scan(&auditCount); err != nil || auditCount != 2 {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM provider_payout_audit WHERE provider_id=$1`, provider.ID).Scan(&auditCount); err != nil || auditCount != 3 {
 		t.Fatalf("replacement audit: %d %v", auditCount, err)
 	}
 	otherChallenge, err := auth.NewChallenge(ctx, application.AuthLogin, otherWallet, "")
@@ -233,19 +255,19 @@ func TestMission02DatabaseLifecycleAndSecurity(t *testing.T) {
 	if _, err := catalogRepo.GetService(ctx, service.ID, otherSession.Identity.ID); !errors.Is(err, application.ErrNotFound) {
 		t.Fatalf("service IDOR: %v", err)
 	}
-	if _, err := catalog.CreatePackage(ctx, otherSession.Identity, provider.ID, service.ID, "Hijacked", "", 1, 1, nil); !errors.Is(err, application.ErrNotFound) {
-		t.Fatalf("package create IDOR: %v", err)
+	if _, err := catalog.CreatePass(ctx, otherSession.Identity, provider.ID, service.ID, "Hijacked", "", 1, 1, nil, "", ""); !errors.Is(err, application.ErrNotFound) {
+		t.Fatalf("pass create IDOR: %v", err)
 	}
-	if _, err := catalogRepo.GetPackage(ctx, pack.ID, otherSession.Identity.ID); !errors.Is(err, application.ErrNotFound) {
-		t.Fatalf("package IDOR: %v", err)
+	if _, err := catalogRepo.GetProviderPass(ctx, pass.ID, otherSession.Identity.ID); !errors.Is(err, application.ErrNotFound) {
+		t.Fatalf("pass IDOR: %v", err)
 	}
-	if _, err := catalog.PublishPackage(ctx, otherSession.Identity, pack.ID); !errors.Is(err, application.ErrNotFound) {
+	if _, err := catalog.PublishPass(ctx, otherSession.Identity, pass.ID); !errors.Is(err, application.ErrNotFound) {
 		t.Fatalf("publish IDOR: %v", err)
 	}
-	if _, err := catalog.CreatePackage(ctx, session.Identity, provider.ID, service.ID, "Invalid", "", 0, 0, nil); !errors.Is(err, application.ErrValidation) {
-		t.Fatalf("invalid package: %v", err)
+	if _, err := catalog.CreatePass(ctx, session.Identity, provider.ID, service.ID, "Invalid", "", 0, 0, nil, "", ""); !errors.Is(err, application.ErrValidation) {
+		t.Fatalf("invalid pass: %v", err)
 	}
-	if _, err := catalog.CreatePackage(ctx, session.Identity, provider.ID, service.ID, "No expiry", "", 1, 100, nil); err != nil {
+	if _, err := catalog.CreatePass(ctx, session.Identity, provider.ID, service.ID, "No expiry", "", 1, 100, nil, "", ""); err != nil {
 		t.Fatalf("optional expiry: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE auth_sessions SET created_at=now()-interval '25 hours',expires_at=now()-interval '1 hour' WHERE id=$1`, otherSession.ID); err != nil {

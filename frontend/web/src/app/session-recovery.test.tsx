@@ -42,10 +42,10 @@ describe('session expiry', () => {
     // the server rather than the session object it is still holding: no stale
     // wallet in the header, and the signed-out surface instead of an error.
     await waitFor(() => expect(screen.getByText('Your passes are private')).toBeInTheDocument())
-    expect(screen.queryByRole('button', { name: /NQ07/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Profile' })).not.toBeInTheDocument()
 
     // And it fails closed — no pass data is left rendered (docs/09 §66, §124).
-    expect(screen.queryByText(/sessions left/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/sessions remaining/)).not.toBeInTheDocument()
   })
 
   it('drops cached provider data with the session, not just the header', async () => {
@@ -61,14 +61,14 @@ describe('session expiry', () => {
           ? ok({ items: [] })
           : domainError(401, 'AUTH_REQUIRED', 'Authentication required')
       },
-      [`/api/v1/providers/${PROVIDER_ID}/packages`]: () =>
+      [`/api/v1/providers/${PROVIDER_ID}/passes`]: () =>
         domainError(401, 'AUTH_REQUIRED', 'Authentication required'),
     })
 
     renderApp('/provider', { wallet: WALLET })
 
     await waitFor(() =>
-      expect(screen.getByText('Sign in to manage your workspace')).toBeInTheDocument(),
+      expect(screen.getByText('Log in to manage your workspace')).toBeInTheDocument(),
     )
   })
 
@@ -77,14 +77,14 @@ describe('session expiry', () => {
     // normal state, not an expiry event, and must not raise an error surface.
     mockApi({
       'GET /api/v1/auth/session': () => domainError(401, 'AUTH_REQUIRED', 'Authentication required'),
-      '/api/v1/public/packages': () => ok({ items: [] }),
+      '/api/v1/public/passes': () => ok({ items: [] }),
     })
 
     renderApp('/discover', { wallet: WALLET })
 
     expect(
-      await screen.findByRole('heading', { name: /Services worth coming back to/i, level: 1 }),
+      await screen.findByRole('heading', { name: /Passes worth coming back to/i, level: 1 }),
     ).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Login' })).toBeInTheDocument()
   })
 })

@@ -3,7 +3,7 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { domainError, mockApi, ok } from '@/test/mock-api'
+import { authSessionRoutes, domainError, mockApi, ok } from '@/test/mock-api'
 
 /**
  * Wallet authentication, end to end across the two trust boundaries.
@@ -19,12 +19,19 @@ import { domainError, mockApi, ok } from '@/test/mock-api'
 const listAccounts = vi.fn()
 const signMessage = vi.fn()
 
+import { miniAppTransportDouble } from '@/test/wallet-transport'
+
 vi.mock('@/lib/nimiq', async () => {
   const actual = await vi.importActual<typeof import('@/lib/nimiq')>('@/lib/nimiq')
   return {
     ...actual,
-    listAccounts: (...args: unknown[]) => listAccounts(...args),
-    signMessage: (...args: unknown[]) => signMessage(...args),
+    // Stubbed at the transport boundary, on the Nimiq Pay side: one user action
+    // carries account access and signing, with no popup budget to spend.
+    currentTransport: () =>
+      miniAppTransportDouble({
+        listAccounts: (...args: unknown[]) => listAccounts(...args),
+        signMessage: (...args: unknown[]) => signMessage(...args),
+      }),
   }
 })
 
@@ -76,11 +83,7 @@ describe('wallet authentication', () => {
     listAccounts.mockResolvedValue([WALLET])
     signMessage.mockResolvedValue({ publicKey: 'pk-hex', signature: 'sig-hex' })
 
-    const { calls } = mockApi({
-      'GET /api/v1/auth/session': () => domainError(401, 'AUTH_REQUIRED', 'Authentication required'),
-      'POST /api/v1/auth/challenges': () => ok(CHALLENGE),
-      'POST /api/v1/auth/sessions': () => ok(SESSION),
-    })
+    const { calls } = mockApi(authSessionRoutes(SESSION, CHALLENGE))
 
     const { result } = renderHook(() => useSession(), { wrapper })
     await waitFor(() => expect(result.current.isRecovering).toBe(false))
@@ -88,6 +91,9 @@ describe('wallet authentication', () => {
     await act(async () => {
       await result.current.signIn()
     })
+    if (result.current.flow.kind === 'WALLET_SELECTED') {
+      await act(async () => { await result.current.signIn() })
+    }
 
     // The frontend never composes the signed text.
     expect(signMessage).toHaveBeenCalledWith(CHALLENGE.message)
@@ -121,14 +127,17 @@ describe('wallet authentication', () => {
       return { publicKey: 'pk', signature: 'sig' }
     })
 
+    let authed = false
     mockApi({
-      'GET /api/v1/auth/session': () => domainError(401, 'AUTH_REQUIRED', 'Authentication required'),
+      'GET /api/v1/auth/session': () =>
+        authed ? ok(SESSION) : domainError(401, 'AUTH_REQUIRED', 'Authentication required'),
       'POST /api/v1/auth/challenges': () => {
         order.push('challenge')
         return ok(CHALLENGE)
       },
       'POST /api/v1/auth/sessions': () => {
         order.push('verify')
+        authed = true
         return ok(SESSION)
       },
     })
@@ -138,6 +147,9 @@ describe('wallet authentication', () => {
     await act(async () => {
       await result.current.signIn()
     })
+    if (result.current.flow.kind === 'WALLET_SELECTED') {
+      await act(async () => { await result.current.signIn() })
+    }
 
     expect(order).toEqual(['listAccounts', 'challenge', 'sign', 'verify'])
   })
@@ -146,17 +158,16 @@ describe('wallet authentication', () => {
     listAccounts.mockResolvedValue([WALLET])
     signMessage.mockRejectedValue(new NimiqOperationError(nimiqError('USER_REJECTED')))
 
-    mockApi({
-      'GET /api/v1/auth/session': () => domainError(401, 'AUTH_REQUIRED', 'Authentication required'),
-      'POST /api/v1/auth/challenges': () => ok(CHALLENGE),
-      'POST /api/v1/auth/sessions': () => ok(SESSION),
-    })
+    mockApi(authSessionRoutes(SESSION, CHALLENGE))
 
     const { result } = renderHook(() => useSession(), { wrapper })
     await waitFor(() => expect(result.current.isRecovering).toBe(false))
     await act(async () => {
       await result.current.signIn()
     })
+    if (result.current.flow.kind === 'WALLET_SELECTED') {
+      await act(async () => { await result.current.signIn() })
+    }
 
     expect(result.current.flow.kind).toBe('CANCELLED')
     expect(result.current.session).toBeNull()
@@ -171,6 +182,9 @@ describe('wallet authentication', () => {
     await act(async () => {
       await result.current.signIn()
     })
+    if (result.current.flow.kind === 'WALLET_SELECTED') {
+      await act(async () => { await result.current.signIn() })
+    }
 
     expect(result.current.flow.kind).toBe('CANCELLED')
     expect(signMessage).not.toHaveBeenCalled()
@@ -191,6 +205,9 @@ describe('wallet authentication', () => {
     await act(async () => {
       await result.current.signIn()
     })
+    if (result.current.flow.kind === 'WALLET_SELECTED') {
+      await act(async () => { await result.current.signIn() })
+    }
 
     expect(result.current.flow).toMatchObject({ kind: 'FAILED', reason: 'CHALLENGE_EXPIRED' })
     expect(result.current.session).toBeNull()
@@ -211,9 +228,44 @@ describe('wallet authentication', () => {
     await act(async () => {
       await result.current.signIn()
     })
+    if (result.current.flow.kind === 'WALLET_SELECTED') {
+      await act(async () => { await result.current.signIn() })
+    }
 
     expect(result.current.session).toBeNull()
     expect(result.current.flow).toMatchObject({ kind: 'FAILED', reason: 'VERIFICATION_FAILED' })
+  })
+
+  it('blames the signature, not the browser, when the backend rejects the proof', async () => {
+    // Both a rejected proof and a dropped session cookie answer 401, and the
+    // two were once reported with the same "your signature was accepted, but
+    // the browser did not keep the session cookie" copy. Inside Nimiq Pay that
+    // sent a real user to hunt for a cookie setting while the wallet's
+    // signature was the thing being refused. The proof failure must never
+    // claim the signature was accepted.
+    listAccounts.mockResolvedValue([WALLET])
+    signMessage.mockResolvedValue({ publicKey: 'pk', signature: 'sig' })
+
+    mockApi({
+      'GET /api/v1/auth/session': () => domainError(401, 'AUTH_REQUIRED', 'Authentication required'),
+      'POST /api/v1/auth/challenges': () => ok(CHALLENGE),
+      'POST /api/v1/auth/sessions': () => domainError(401, 'INVALID_SIGNATURE', 'Wallet signature invalid'),
+    })
+
+    const { result } = renderHook(() => useSession(), { wrapper })
+    await waitFor(() => expect(result.current.isRecovering).toBe(false))
+    await act(async () => { await result.current.signIn() })
+    if (result.current.flow.kind === 'WALLET_SELECTED') {
+      await act(async () => { await result.current.signIn() })
+    }
+
+    expect(result.current.session).toBeNull()
+    const flow = result.current.flow
+    expect(flow).toMatchObject({ kind: 'FAILED', reason: 'VERIFICATION_FAILED' })
+    const message = flow.kind === 'FAILED' ? flow.message : ''
+    expect(message).not.toContain('cookie')
+    expect(message).not.toContain('accepted')
+    expect(message).toContain('could not verify that signature')
   })
 
   it('recovers an existing session on boot without touching the wallet', async () => {
@@ -237,7 +289,7 @@ describe('wallet authentication', () => {
     expect(result.current.flow.kind).toBe('IDLE')
   })
 
-  it('drops the session on sign-out even if the server call fails', async () => {
+  it('keeps the session when server-side logout cannot be confirmed', async () => {
     mockApi({
       'GET /api/v1/auth/session': () => ok(SESSION),
       'DELETE /api/v1/auth/session': () => {
@@ -249,10 +301,13 @@ describe('wallet authentication', () => {
     await waitFor(() => expect(result.current.session).toEqual(SESSION))
 
     await act(async () => {
-      await result.current.signOut()
+      try {
+        await result.current.signOut()
+      } catch {
+        /* Logout could not be confirmed; the session stays. */
+      }
     })
-
-    expect(result.current.session).toBeNull()
+    expect(result.current.session).toEqual(SESSION)
   })
 
   it('will not start a second sign-in while one is in flight', async () => {
@@ -264,12 +319,7 @@ describe('wallet authentication', () => {
         }),
     )
 
-    mockApi({
-      'GET /api/v1/auth/session': () => domainError(401, 'AUTH_REQUIRED', 'Authentication required'),
-      'POST /api/v1/auth/challenges': () => ok(CHALLENGE),
-      'POST /api/v1/auth/sessions': () => ok(SESSION),
-    })
-    signMessage.mockResolvedValue({ publicKey: 'pk', signature: 'sig' })
+    mockApi(authSessionRoutes(SESSION, CHALLENGE))
 
     const { result } = renderHook(() => useSession(), { wrapper })
     await waitFor(() => expect(result.current.isRecovering).toBe(false))
@@ -284,4 +334,51 @@ describe('wallet authentication', () => {
     // Stacking native approval sheets breaks informed consent (docs/04 §24).
     expect(listAccounts).toHaveBeenCalledTimes(1)
   })
+})
+
+
+it('recovers a session cookie that was missing on the first read after proof', async () => {
+  listAccounts.mockResolvedValue([WALLET])
+  signMessage.mockResolvedValue({ publicKey: 'pk-hex', signature: 'sig-hex' })
+  let sessionReads = 0
+  mockApi({
+    'GET /api/v1/auth/session': () => {
+      sessionReads += 1
+      return sessionReads <= 2
+        ? domainError(401, 'AUTH_REQUIRED', 'Authentication required')
+        : ok(SESSION)
+    },
+    'POST /api/v1/auth/challenges': () => ok(CHALLENGE),
+    'POST /api/v1/auth/sessions': () => ok(SESSION),
+  })
+  const { result } = renderHook(() => useSession(), { wrapper })
+  await waitFor(() => expect(result.current.isRecovering).toBe(false))
+  await act(async () => {
+    await result.current.signIn()
+  })
+  if (result.current.flow.kind === 'WALLET_SELECTED') {
+    await act(async () => {
+      await result.current.signIn()
+    })
+  }
+  expect(result.current.session).toEqual(SESSION)
+  expect(result.current.flow.kind).toBe('AUTHENTICATED')
+})
+
+it('does not unlock private areas when proof succeeds but the cookie is missing', async () => {
+  listAccounts.mockResolvedValue([WALLET])
+  signMessage.mockResolvedValue({ publicKey: 'pk', signature: 'sig' })
+  mockApi({
+    'GET /api/v1/auth/session': () => domainError(401, 'AUTH_REQUIRED'),
+    'POST /api/v1/auth/challenges': () => ok(CHALLENGE),
+    'POST /api/v1/auth/sessions': () => ok(SESSION),
+  })
+  const { result } = renderHook(() => useSession(), { wrapper })
+  await waitFor(() => expect(result.current.isRecovering).toBe(false))
+  await act(async () => { await result.current.signIn() })
+  expect(result.current.flow.kind).toBe('WALLET_SELECTED')
+  expect(signMessage).not.toHaveBeenCalled()
+  await act(async () => { await result.current.signIn() })
+  expect(result.current.session).toBeNull()
+  expect(result.current.flow).toMatchObject({ kind: 'FAILED', message: expect.stringContaining('cookie') })
 })

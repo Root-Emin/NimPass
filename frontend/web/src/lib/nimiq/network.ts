@@ -1,3 +1,5 @@
+import { deployment } from '../../../config/deployment'
+
 import type { NimiqNetwork } from '@/types/domain'
 
 /**
@@ -19,14 +21,13 @@ import type { NimiqNetwork } from '@/types/domain'
 export function resolveNetwork(
   raw: string | undefined = import.meta.env.VITE_NIMIQ_NETWORK,
 ): NimiqNetwork {
-  const value = raw?.trim().toUpperCase()
-  if (value === 'MAINNET' || value === 'MAIN') return 'MAINNET'
-  // Defaulting to testnet: mistakenly treating a build as mainnet is the more
-  // expensive error.
-  return 'TESTNET'
+  if (raw === 'MAINNET' || raw === 'TESTNET') return raw
+  throw new Error('VITE_NIMIQ_NETWORK must explicitly be MAINNET or TESTNET.')
 }
 
-export const NIMIQ_NETWORK: NimiqNetwork = resolveNetwork()
+const configured = deployment(import.meta.env.VITE_NIMIQ_NETWORK, import.meta.env.VITE_APP_ENV)
+export const NIMIQ_NETWORK: NimiqNetwork = configured.network
+export const APP_ENV = configured.environment
 
 export const IS_MAINNET = NIMIQ_NETWORK === 'MAINNET'
 

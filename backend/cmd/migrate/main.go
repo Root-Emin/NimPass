@@ -12,7 +12,7 @@ import (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if err := run(); err != nil {
-		logger.Error("migration failed", "error", err)
+		logger.Error("migration failed; verify config, connectivity and migration checksums")
 		os.Exit(1)
 	}
 	logger.Info("migrations applied")
@@ -29,5 +29,5 @@ func run() error {
 		return err
 	}
 	defer pool.Close()
-	return database.Migrate(ctx, pool, "migrations")
+	return database.Migrate(ctx, pool, cfg.MigrationsDir)
 }

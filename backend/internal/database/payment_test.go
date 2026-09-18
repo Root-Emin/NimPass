@@ -43,7 +43,14 @@ func paymentID(t *testing.T) domain.ID {
 	return id
 }
 func paymentOffer(t *testing.T, pool *pgxpool.Pool) (application.Identity, application.Identity, domain.ID, string) {
+	return paymentOfferTable(t, pool, "passes")
+}
+
+func paymentOfferTable(t *testing.T, pool *pgxpool.Pool, catalogTable string) (application.Identity, application.Identity, domain.ID, string) {
 	t.Helper()
+	if catalogTable != "passes" && catalogTable != "packages" {
+		t.Fatal("invalid fixture table")
+	}
 	ctx := context.Background()
 	now := time.Now().UTC()
 	customerWallet, _, _ := missionKey(t)
@@ -69,10 +76,52 @@ func paymentOffer(t *testing.T, pool *pgxpool.Pool) (application.Identity, appli
 	if _, err := pool.Exec(ctx, `INSERT INTO services(id,provider_id,name,status,created_at,updated_at) VALUES($1,$2,'Yoga','ACTIVE',$3,$3)`, service, provider, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO packages(id,provider_id,service_id,title,session_count,price_luna,status,created_at,updated_at) VALUES($1,$2,$3,'Ten sessions',10,12340000,'ACTIVE',$4,$4)`, pkg, provider, service, now); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO `+catalogTable+`(id,provider_id,service_id,title,session_count,price_luna,status,created_at,updated_at) VALUES($1,$2,$3,'Ten sessions',10,12340000,'ACTIVE',$4,$4)`, pkg, provider, service, now); err != nil {
 		t.Fatal(err)
 	}
 	return customer, other, pkg, providerWallet
+}
+
+// completePass spends a purchased pass down to zero, which is the state
+// `01-PRODUCT.md §56` calls completed and the one `Buy Again` starts from.
+//
+// Tests that buy the same Pass a second time need it because holding two live
+// passes for one Pass is refused (`application.ErrPassAlreadyOwned`). The
+// sessions are written directly rather than redeemed, because the subject of
+// those tests is the second purchase and not the signature that spent the
+// first; the session rows are completed alongside the counter so the fixture
+// leaves the two agreeing, as ADR-012 requires of every real write.
+func completePass(t *testing.T, pool *pgxpool.Pool, passID domain.ID) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `UPDATE pass_sessions SET status='COMPLETED',completed_at=now(),completed_by='PROVIDER',updated_at=now() WHERE purchased_pass_id=$1 AND status<>'COMPLETED'`, passID); err != nil {
+		t.Fatal(err)
+	}
+	tag, err := pool.Exec(ctx, `UPDATE purchased_passes SET used_sessions=original_sessions,remaining_sessions=0,status='COMPLETED',completed_at=now() WHERE id=$1`, passID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("completePass matched %d rows", tag.RowsAffected())
+	}
+}
+
+// siblingCatalogPass adds a second Pass to the same provider and service.
+//
+// A customer may hold many passes; what they may not hold is two live ones for
+// the same Pass. Tests that need a customer with several passes therefore buy
+// several Passes, which is also what the product looks like.
+func siblingCatalogPass(t *testing.T, pool *pgxpool.Pool, from domain.ID, title string) domain.ID {
+	t.Helper()
+	id := paymentID(t)
+	tag, err := pool.Exec(context.Background(), `INSERT INTO passes(id,provider_id,service_id,title,description,session_count,price_luna,expiration_at,status,created_at,updated_at) SELECT $1,provider_id,service_id,$2,description,session_count,price_luna,expiration_at,'ACTIVE',now(),now() FROM passes WHERE id=$3`, id, title, from)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("siblingCatalogPass copied %d rows", tag.RowsAffected())
+	}
+	return id
 }
 
 func paymentEvidence(p application.PurchaseRecord, hash string, final bool) nimiq.ChainEvidence {
@@ -82,10 +131,14 @@ func paymentEvidence(p application.PurchaseRecord, hash string, final bool) nimi
 	yes := true
 	block := uint32(100)
 	tx := nimiq.ChainTransaction{Hash: hash, BlockNumber: &block, From: string(p.Purchase.ExpectedWallet), FromType: &zero, To: string(p.Purchase.Snapshot.Recipient), ToType: &zero, Value: &value, RecipientData: hex.EncodeToString([]byte(p.Purchase.PaymentReference)), Flags: &zero, Proof: "aa", NetworkID: &net, ExecutionResult: &yes}
-	result := nimiq.ChainEvidence{Transaction: tx, InclusionBlock: block, IncludedAt: p.Purchase.CreatedAt}
+	// FinalityBlock is set whether or not finality has happened, because that
+	// is what the real client does (see RPCClient.Inspect): the macro height
+	// covering an inclusion is arithmetic on the batch length, so it is known
+	// as soon as the block number is. `Finalized` is what separates a height
+	// from a settlement.
+	result := nimiq.ChainEvidence{Transaction: tx, InclusionBlock: block, IncludedAt: p.Purchase.CreatedAt, FinalityBlock: 120}
 	if final {
 		result.Finalized = true
-		result.FinalityBlock = 120
 		result.FinalizedAt = p.Purchase.CreatedAt.Add(time.Second)
 	}
 	return result
@@ -164,7 +217,7 @@ func TestPaymentLifecycleRecoveryAndConcurrentAtomicity(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM verified_payments WHERE purchase_id=$1`, p.Purchase.ID).Scan(&receipts); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM passes WHERE purchase_id=$1`, p.Purchase.ID).Scan(&passes); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM purchased_passes WHERE purchase_id=$1`, p.Purchase.ID).Scan(&passes); err != nil {
 		t.Fatal(err)
 	}
 	if receipts != 1 || passes != 1 {
@@ -177,6 +230,14 @@ func TestPaymentLifecycleRecoveryAndConcurrentAtomicity(t *testing.T) {
 	if _, err := svc.Store.GetPass(ctx, got.PassID, other.ID); !errors.Is(err, application.ErrNotFound) {
 		t.Fatalf("pass IDOR: %v", err)
 	}
+	// Buying the same Pass again while the first one still has sessions on it
+	// is refused — one entitlement, not two (`application.ErrPassAlreadyOwned`).
+	if _, _, err := svc.Create(ctx, customer, pkg, "click-2"); !errors.Is(err, application.ErrPassAlreadyOwned) {
+		t.Fatalf("a second live pass for the same Pass: %v", err)
+	}
+	// Spent to the end, the same customer may buy it again: this is §56's
+	// Buy Again, and it is what the rest of this test runs on.
+	completePass(t, pool, got.PassID)
 	second, _, err := svc.Create(ctx, customer, pkg, "click-2")
 	if err != nil || second.Purchase.ID == p.Purchase.ID {
 		t.Fatalf("repeat purchase: %v", err)
@@ -218,7 +279,16 @@ func TestPaymentMismatchAndCandidateNotGlobalReservation(t *testing.T) {
 		name   string
 		mutate func(*nimiq.ChainEvidence)
 	}{
-		{"wrong sender", func(e *nimiq.ChainEvidence) { e.Transaction.From = string(q.Purchase.ExpectedWallet) }},
+		// A stranger's sender *and* no reference on chain. Both halves are the
+		// case: with this intent's reference present the sender no longer
+		// gates the match, because the reference is the stronger binding and
+		// Nimiq Pay chooses the paying account itself. Stripping the data
+		// field is what puts this back on the sender rule, which is exactly
+		// where an unreferenced payment belongs.
+		{"wrong sender", func(e *nimiq.ChainEvidence) {
+			e.Transaction.From = string(q.Purchase.ExpectedWallet)
+			e.Transaction.RecipientData = ""
+		}},
 		{"wrong recipient", func(e *nimiq.ChainEvidence) { e.Transaction.To = string(q.Purchase.ExpectedWallet) }},
 		{"wrong amount", func(e *nimiq.ChainEvidence) { v := uint64(1); e.Transaction.Value = &v }},
 		{"wrong data", func(e *nimiq.ChainEvidence) { e.Transaction.RecipientData = "00" }},
@@ -227,7 +297,10 @@ func TestPaymentMismatchAndCandidateNotGlobalReservation(t *testing.T) {
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			attack, _, err := svc.Create(ctx, customer, pkg, "attack-"+tc.name)
+			// Each mismatch needs its own outstanding intent. Creating again for
+			// the same customer/product correctly reuses the still-pending one.
+			customer, _, product, _ := paymentOffer(t, pool)
+			attack, _, err := svc.Create(ctx, customer, product, "attack-"+tc.name)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -275,10 +348,10 @@ func TestIntentEligibilitySnapshotCancellationAndTiming(t *testing.T) {
 		t.Fatal("commercial snapshot wrong")
 	}
 	otherPayout, _, _ := missionKey(t)
-	if _, err := pool.Exec(ctx, `UPDATE packages SET price_luna=99000000,session_count=2 WHERE id=$1`, pkg); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE passes SET price_luna=99000000,session_count=2 WHERE id=$1`, pkg); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE providers SET payout_wallet=$2 WHERE id=(SELECT provider_id FROM packages WHERE id=$1)`, pkg, otherPayout); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE providers SET payout_wallet=$2 WHERE id=(SELECT provider_id FROM passes WHERE id=$1)`, pkg, otherPayout); err != nil {
 		t.Fatal(err)
 	}
 	reloaded, err := svc.Store.Get(ctx, p.Purchase.ID, customer.ID)
@@ -297,22 +370,22 @@ func TestIntentEligibilitySnapshotCancellationAndTiming(t *testing.T) {
 	if _, err := svc.Submit(ctx, customer, p.Purchase.ID, strings.Repeat("a", 64)); !errors.Is(err, application.ErrExpired) {
 		t.Fatalf("cancelled intent accepted payment: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE packages SET status='DRAFT' WHERE id=$1`, pkg); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE passes SET status='DRAFT' WHERE id=$1`, pkg); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := svc.Create(ctx, other, pkg, ""); !errors.Is(err, application.ErrConflict) {
 		t.Fatalf("draft purchase: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE packages SET status='ACTIVE',expiration_at=$2 WHERE id=$1`, pkg, time.Now().Add(-time.Minute)); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE passes SET status='ACTIVE',expiration_at=$2 WHERE id=$1`, pkg, time.Now().Add(-time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := svc.Create(ctx, other, pkg, ""); !errors.Is(err, application.ErrConflict) {
-		t.Fatalf("expired package purchase: %v", err)
+		t.Fatalf("expired pass purchase: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE packages SET expiration_at=NULL WHERE id=$1`, pkg); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE passes SET expiration_at=NULL WHERE id=$1`, pkg); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE providers SET payout_wallet=NULL,payout_verified_at=NULL WHERE id=(SELECT provider_id FROM packages WHERE id=$1)`, pkg); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE providers SET payout_wallet=NULL,payout_verified_at=NULL WHERE id=(SELECT provider_id FROM passes WHERE id=$1)`, pkg); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := svc.Create(ctx, other, pkg, ""); !errors.Is(err, application.ErrConflict) {
@@ -425,10 +498,10 @@ func TestFinalizedPaymentUsesHistoricalCommercialSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	newRecipient, _, _ := missionKey(t)
-	if _, err := pool.Exec(ctx, `UPDATE packages SET price_luna=88000000,session_count=2 WHERE id=$1`, pkg); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE passes SET price_luna=88000000,session_count=2 WHERE id=$1`, pkg); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE providers SET payout_wallet=$2 WHERE id=(SELECT provider_id FROM packages WHERE id=$1)`, pkg, newRecipient); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE providers SET payout_wallet=$2 WHERE id=(SELECT provider_id FROM passes WHERE id=$1)`, pkg, newRecipient); err != nil {
 		t.Fatal(err)
 	}
 	hash := strings.Repeat("c", 64)
@@ -453,7 +526,7 @@ func assertPaymentCounts(t *testing.T, pool *pgxpool.Pool, purchaseID domain.ID,
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM verified_payments WHERE purchase_id=$1 AND transaction_hash=$2`, purchaseID, hash).Scan(&gotReceipts); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM passes WHERE purchase_id=$1`, purchaseID).Scan(&gotPasses); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM purchased_passes WHERE purchase_id=$1`, purchaseID).Scan(&gotPasses); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM compensation_cases WHERE purchase_id=$1 AND transaction_hash=$2`, purchaseID, hash).Scan(&gotCases); err != nil {
@@ -467,25 +540,25 @@ func assertPaymentCounts(t *testing.T, pool *pgxpool.Pool, purchaseID domain.ID,
 	}
 }
 
-func TestOpenEndedPackageCreatesIntentInsideThirtyFiveMinuteWindow(t *testing.T) {
+func TestOpenEndedPassCreatesIntentInsideThirtyFiveMinuteWindow(t *testing.T) {
 	pool := missionPool(t)
 	ctx := context.Background()
 	customer, _, pkg, _ := paymentOffer(t, pool)
 	started := time.Now().UTC()
 	svc := application.Payments{Store: PaymentRepository{Pool: pool}, Chain: &testChain{}, Network: domain.NimiqTestnet, Now: func() time.Time { return started.Add(40 * time.Minute) }}
 	if _, reused, err := svc.Create(ctx, customer, pkg, ""); err != nil || reused {
-		t.Fatalf("open-ended package cutoff: reused=%v err=%v", reused, err)
+		t.Fatalf("open-ended pass cutoff: reused=%v err=%v", reused, err)
 	}
 }
 
-func TestFixedPackageCutoffPreservesValidIntentAndSnapshot(t *testing.T) {
+func TestFixedPassCutoffPreservesValidIntentAndSnapshot(t *testing.T) {
 	pool := missionPool(t)
 	ctx := context.Background()
 	customer, other, pkg, _ := paymentOffer(t, pool)
 	chain := &testChain{}
 	started := time.Now().UTC().Truncate(time.Microsecond).Add(time.Second)
 	expires := started.Add(domain.PurchaseCutoffBuffer + time.Microsecond)
-	if _, err := pool.Exec(ctx, `UPDATE packages SET expiration_at=$2 WHERE id=$1`, pkg, expires); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE passes SET expiration_at=$2 WHERE id=$1`, pkg, expires); err != nil {
 		t.Fatal(err)
 	}
 	svc := application.Payments{Store: PaymentRepository{Pool: pool}, Chain: chain, Network: domain.NimiqTestnet, Now: func() time.Time { return started }}
@@ -501,8 +574,8 @@ func TestFixedPackageCutoffPreservesValidIntentAndSnapshot(t *testing.T) {
 		t.Fatal("fixture is not before cutoff")
 	}
 	var storedExpiry time.Time
-	if err := pool.QueryRow(ctx, `SELECT expiration_at FROM packages WHERE id=$1`, pkg).Scan(&storedExpiry); err != nil || !storedExpiry.Equal(expires) {
-		t.Fatalf("cutoff mutated package expiration: %v %v", storedExpiry, err)
+	if err := pool.QueryRow(ctx, `SELECT expiration_at FROM passes WHERE id=$1`, pkg).Scan(&storedExpiry); err != nil || !storedExpiry.Equal(expires) {
+		t.Fatalf("cutoff mutated pass expiration: %v %v", storedExpiry, err)
 	}
 	svc.Now = func() time.Time { return cutoff }
 	if _, _, err := svc.Create(ctx, other, pkg, ""); !errors.Is(err, application.ErrPurchaseCutoff) {
@@ -515,10 +588,10 @@ func TestFixedPackageCutoffPreservesValidIntentAndSnapshot(t *testing.T) {
 	if same, reused, err := svc.Create(ctx, customer, pkg, "fixed-cutoff"); err != nil || !reused || same.Purchase.ID != p.Purchase.ID {
 		t.Fatalf("pre-cutoff intent not recoverable: %+v %v %v", same, reused, err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE packages SET title='Changed title',price_luna=88000000,expiration_at=$2 WHERE id=$1`, pkg, expires.Add(time.Hour)); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE passes SET title='Changed title',price_luna=88000000,expiration_at=$2 WHERE id=$1`, pkg, expires.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE packages SET status='UNAVAILABLE' WHERE id=$1`, pkg); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE passes SET status='UNAVAILABLE' WHERE id=$1`, pkg); err != nil {
 		t.Fatal(err)
 	}
 	hash := strings.Repeat("d", 64)
@@ -533,7 +606,7 @@ func TestFixedPackageCutoffPreservesValidIntentAndSnapshot(t *testing.T) {
 		t.Fatalf("valid historical payment did not provision pass: %+v %v", got, err)
 	}
 	pass, err := svc.Store.GetPass(ctx, got.PassID, customer.ID)
-	if err != nil || pass.ExpiresAt == nil || !pass.ExpiresAt.Equal(expires) || pass.Snapshot.PackageTitle != "Ten sessions" || pass.Snapshot.PriceLuna != 12_340_000 {
+	if err != nil || pass.ExpiresAt == nil || !pass.ExpiresAt.Equal(expires) || pass.Snapshot.PassTitle != "Ten sessions" || pass.Snapshot.PriceLuna != 12_340_000 {
 		t.Fatalf("historical terms changed: %+v %v", pass, err)
 	}
 }
@@ -545,7 +618,7 @@ func TestFixedPassExpiryAfterFinalityRequiresDurableCompensation(t *testing.T) {
 	chain := &testChain{}
 	started := time.Now().UTC().Truncate(time.Microsecond).Add(time.Second)
 	expires := started.Add(36 * time.Minute)
-	if _, err := pool.Exec(ctx, `UPDATE packages SET expiration_at=$2 WHERE id=$1`, pkg, expires); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE passes SET expiration_at=$2 WHERE id=$1`, pkg, expires); err != nil {
 		t.Fatal(err)
 	}
 	svc := application.Payments{Store: PaymentRepository{Pool: pool}, Chain: chain, Network: domain.NimiqTestnet, Now: func() time.Time { return started }}
@@ -589,14 +662,14 @@ func TestFixedPassExpiryAfterFinalityRequiresDurableCompensation(t *testing.T) {
 		}
 	}
 	got, err := svc.Store.Get(ctx, p.Purchase.ID, customer.ID)
-	if err != nil || got.Purchase.Status != domain.PurchaseCompensationRequired || got.CompensationStatus != "OPEN" || got.CompensationReason != "PACKAGE_EXPIRED_BEFORE_ACTIVATION" || got.PassID != "" || got.Purchase.TransactionHash != hash || got.Purchase.ConfirmedAt == nil {
+	if err != nil || got.Purchase.Status != domain.PurchaseCompensationRequired || got.CompensationStatus != "OPEN" || got.CompensationReason != "PASS_EXPIRED_BEFORE_ACTIVATION" || got.PassID != "" || got.Purchase.TransactionHash != hash || got.Purchase.ConfirmedAt == nil {
 		t.Fatalf("payment not durably compensated: %+v %v", got, err)
 	}
 	var receipts, passes, cases, events int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM verified_payments WHERE purchase_id=$1 AND transaction_hash=$2`, p.Purchase.ID, hash).Scan(&receipts); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM passes WHERE purchase_id=$1`, p.Purchase.ID).Scan(&passes); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM purchased_passes WHERE purchase_id=$1`, p.Purchase.ID).Scan(&passes); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM compensation_cases WHERE purchase_id=$1 AND transaction_hash=$2 AND status='OPEN' AND resolved_at IS NULL AND resolution_kind IS NULL`, p.Purchase.ID, hash).Scan(&cases); err != nil {
@@ -623,7 +696,7 @@ func TestFixedPassExpiryAfterFinalityRequiresDurableCompensation(t *testing.T) {
 		t.Fatalf("idempotency key requested another payment: %+v %v %v", again, reused, err)
 	}
 	listed, err := svc.Store.List(ctx, customer.ID)
-	if err != nil || len(listed) == 0 || listed[0].Purchase.Status != domain.PurchaseCompensationRequired || listed[0].PassID != "" || listed[0].CompensationReason != "PACKAGE_EXPIRED_BEFORE_ACTIVATION" {
+	if err != nil || len(listed) == 0 || listed[0].Purchase.Status != domain.PurchaseCompensationRequired || listed[0].PassID != "" || listed[0].CompensationReason != "PASS_EXPIRED_BEFORE_ACTIVATION" {
 		t.Fatalf("recovery list lost compensation: %+v %v", listed, err)
 	}
 	assertPaymentCounts(t, pool, p.Purchase.ID, hash, 1, 0, 1, 1)
@@ -638,13 +711,13 @@ func TestFixedPassExpiryAfterFinalityRequiresDurableCompensation(t *testing.T) {
 	}
 }
 
-func TestFinalityBeforeAndAfterPackageExpiry(t *testing.T) {
+func TestFinalityBeforeAndAfterPassExpiry(t *testing.T) {
 	pool := missionPool(t)
 	ctx := context.Background()
 	customer, other, pkg, _ := paymentOffer(t, pool)
 	started := time.Now().UTC().Truncate(time.Microsecond).Add(time.Second)
 	expires := started.Add(36 * time.Minute)
-	if _, err := pool.Exec(ctx, `UPDATE packages SET expiration_at=$2 WHERE id=$1`, pkg, expires); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE passes SET expiration_at=$2 WHERE id=$1`, pkg, expires); err != nil {
 		t.Fatal(err)
 	}
 	chain := &testChain{}
@@ -685,7 +758,7 @@ func TestFinalityBeforeAndAfterPackageExpiry(t *testing.T) {
 		t.Fatalf("finality before expiry: %+v %v", got, err)
 	}
 	pass, err := svc.Store.GetPass(ctx, got.PassID, customer.ID)
-	if err != nil || pass.Status != domain.PassActive || pass.OriginalSessions != 10 || pass.RemainingSessions != 10 || pass.UsedSessions != 0 {
+	if err != nil || pass.Status != domain.PurchasedPassActive || pass.OriginalSessions != 10 || pass.RemainingSessions != 10 || pass.UsedSessions != 0 {
 		t.Fatalf("pass regression: %+v %v", pass, err)
 	}
 	assertPaymentCounts(t, pool, before.Purchase.ID, beforeHash, 1, 1, 0, 0)

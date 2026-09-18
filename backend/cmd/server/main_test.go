@@ -15,12 +15,12 @@ func TestReconcilerStopsBeforeShutdownContinues(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var startOnce sync.Once
-	done := startReconciler(ctx, time.Millisecond, func(ctx context.Context) error {
+	done := startReconciler(ctx, func(ctx context.Context) error {
 		startOnce.Do(func() { close(started) })
 		<-ctx.Done()
 		<-release
 		return ctx.Err()
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}, func(context.Context) bool { return true }, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	select {
 	case <-started:
 	case <-time.After(time.Second):

@@ -4,15 +4,24 @@ import type { ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { useSession } from '@/hooks/use-session'
+import { useWallet } from '@/hooks/use-wallet'
+import { shortenAddress } from '@/lib/format'
 import { networkLabel } from '@/lib/nimiq'
 import type { AuthFlowState } from '@/types/auth'
 
 /**
  * Explains the sign-in before it happens, then narrates it.
  *
- * Two native Nimiq Pay dialogs appear during this flow — one to reveal an
- * account, one to sign — and both follow from a single deliberate user action.
- * They are never open at once (docs/04-NIMIQ-MINI-APPS.md §24, §56).
+ * The flow is the same everywhere: the wallet names an account, the backend
+ * issues a one-time challenge, the wallet signs it, the backend verifies it.
+ * Only the surface differs — Nimiq Pay's native sheets inside the Mini App, the
+ * Nimiq Hub's window in an ordinary browser — and the copy says "your wallet"
+ * rather than naming either.
+ *
+ * Where the runtime genuinely changes what the user must *do*, it shows: a
+ * transport that needs a click per wallet window pauses at `WALLET_SELECTED`
+ * and asks for the signature explicitly, because a second window opened without
+ * a second click would simply be blocked.
  *
  * The copy is explicit that signing is not a payment: docs/09-SECURITY.md §14
  * calls for a human-readable, purposeful message, and a user who cannot tell a
@@ -26,7 +35,13 @@ export function SignInDialog({
   onOpenChange: (open: boolean) => void
 }) {
   const { flow, signIn, resetFlow } = useSession()
-  const step = describeAuthFlow(flow)
+  const { capabilities } = useWallet()
+  const step = describeAuthFlow(flow, capabilities.gesturePerOperation)
+
+  const start = async () => {
+    const session = await signIn()
+    if (session) onOpenChange(false)
+  }
 
   return (
     <Dialog
@@ -56,28 +71,13 @@ export function SignInDialog({
             </Button>
           ) : null}
 
-          {step.primary === 'sign-in' ? (
-            <Button
-              size="sm"
-              onClick={async () => {
-                const session = await signIn()
-                if (session) onOpenChange(false)
-              }}
-            >
-              <Wallet aria-hidden="true" />
-              Continue in Nimiq Pay
-            </Button>
-          ) : null}
-
-          {step.primary === 'retry' ? (
-            <Button
-              size="sm"
-              onClick={async () => {
-                const session = await signIn()
-                if (session) onOpenChange(false)
-              }}
-            >
-              Try again
+          {step.primary ? (
+            // `signIn` is called directly from the click, with nothing awaited
+            // before it, so a transport that opens a browser window still has
+            // the activation it needs (https://nimiq.dev/hub/getting-started).
+            <Button size="sm" onClick={() => void start()}>
+              {step.primary.icon}
+              {step.primary.label}
             </Button>
           ) : null}
         </div>
@@ -90,43 +90,63 @@ interface AuthStep {
   title: string
   description: ReactNode
   body: ReactNode
-  primary: 'sign-in' | 'retry' | null
+  primary: { label: string; icon?: ReactNode } | null
   canDismiss: boolean
 }
 
-function describeAuthFlow(flow: AuthFlowState): AuthStep {
+function describeAuthFlow(flow: AuthFlowState, gesturePerOperation: boolean): AuthStep {
   switch (flow.kind) {
     case 'IDLE':
       return {
-        title: 'Sign in with your wallet',
-        description: 'Nimpass uses your Nimiq wallet to identify you. No password needed.',
-        body: <SignInExplainer />,
-        primary: 'sign-in',
+        title: 'Log in with your wallet',
+        description:
+          'Your Nimiq wallet is your Nimpass account. No username, no password — and the first login creates the account.',
+        body: <SignInExplainer gesturePerOperation={gesturePerOperation} />,
+        primary: {
+          label: gesturePerOperation ? 'Choose wallet in Nimiq Hub' : 'Continue in Nimiq Pay',
+          icon: <Wallet aria-hidden="true" />,
+        },
         canDismiss: true,
       }
 
     case 'REQUESTING_ACCOUNT':
       return {
         title: 'Choose your account',
-        description: 'Nimiq Pay is asking which account to share with Nimpass.',
-        body: <Waiting label="Waiting for Nimiq Pay…" />,
+        description: 'Your wallet is asking which account to share with Nimpass.',
+        body: <Waiting label="Waiting for your wallet…" />,
         primary: null,
         canDismiss: false,
       }
 
     case 'REQUESTING_CHALLENGE':
       return {
-        title: 'Preparing sign-in…',
-        description: 'Getting a one-time sign-in request from Nimpass.',
+        title: 'Preparing your login…',
+        description: 'Getting a one-time login request from Nimpass.',
         body: <Waiting label="Just a moment…" />,
         primary: null,
         canDismiss: false,
       }
 
+    // The pause a gesture-per-window transport needs. Nothing is in flight: the
+    // login request already exists and is waiting for the user to approve it.
+    case 'WALLET_SELECTED':
+      return {
+        title: 'Sign to finish logging in',
+        description: `Nimpass prepared a one-time login request for ${shortenAddress(flow.wallet)}.`,
+        body: (
+          <p className="rounded-md bg-surface-muted p-3 text-small text-ink-muted">
+            Your wallet opens once more to sign it. This is a signature, not a payment — no NIM
+            leaves your wallet.
+          </p>
+        ),
+        primary: { label: 'Sign and log in', icon: <PenLine aria-hidden="true" /> },
+        canDismiss: true,
+      }
+
     case 'AWAITING_SIGNATURE':
       return {
         title: 'Approve the signature',
-        description: 'Nimiq Pay is asking you to sign a short message.',
+        description: 'Your wallet is asking you to sign a short message.',
         body: (
           <>
             <Waiting label="Waiting for your approval…" />
@@ -157,34 +177,38 @@ function describeAuthFlow(flow: AuthFlowState): AuthStep {
         canDismiss: true,
       }
 
-    // A dismissed native dialog is a normal outcome, never an error.
+    // A dismissed wallet dialog is a normal outcome, never an error.
     case 'CANCELLED':
       return {
-        title: 'Sign-in cancelled',
+        title: 'Login cancelled',
         description: 'Nothing was signed and nothing was charged.',
         body: null,
-        primary: 'retry',
+        primary: { label: 'Try again' },
         canDismiss: true,
       }
 
     case 'FAILED':
       return {
-        title: "Couldn't sign you in",
+        title: "Couldn't log you in",
         description: flow.message,
         body: null,
-        // A missing wallet is not something retrying fixes.
-        primary: flow.reason === 'WALLET_UNAVAILABLE' ? null : 'retry',
+        // A missing wallet is not something retrying fixes. A blocked pop-up is:
+        // the user allows it and presses again, which is why it is not folded
+        // into WALLET_UNAVAILABLE.
+        primary: flow.reason === 'WALLET_UNAVAILABLE' ? null : { label: 'Try again' },
         canDismiss: true,
       }
   }
 }
 
-function SignInExplainer() {
+function SignInExplainer({ gesturePerOperation }: { gesturePerOperation: boolean }) {
   return (
     <ul className="space-y-3 text-body text-ink-muted">
       <li className="flex gap-3">
         <Wallet className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />
-        Nimiq Pay asks which account you want to use.
+        {gesturePerOperation
+          ? 'Nimiq Hub opens a browser wallet. Choose an existing wallet you control; this does not connect to your phone automatically.'
+          : 'Nimiq Pay asks which account you want to use.'}
       </li>
       <li className="flex gap-3">
         <PenLine className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />
@@ -195,7 +219,10 @@ function SignInExplainer() {
         <ShieldCheck className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />
         Nimpass never sees your private key or recovery words.
       </li>
-      <li className="pt-1 text-small text-ink-subtle">Connected to {networkLabel()}.</li>
+      <li className="pt-1 text-small text-ink-subtle">
+        First time here? This same step creates your Nimpass account. Connected to{' '}
+        {networkLabel()}.
+      </li>
     </ul>
   )
 }

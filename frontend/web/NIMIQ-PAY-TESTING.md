@@ -75,8 +75,8 @@ product works at all.**
 Nimiq's documentation does not state what `sign(message)` does to the message
 before signing. Two schemes are plausible: the raw UTF-8 bytes, or the Hub's
 `\x16Nimiq Signed Message:\n<len>` envelope hashed with SHA-256. The backend
-verifies **raw bytes** in production (`nimiq.RawMessage`) and deliberately does
-not silently try the other.
+verifies whichever scheme `NIMIQ_SIGNING_SCHEME` names — `raw` by default
+(`nimiq.RawMessage`) — and deliberately never silently tries the other.
 
 If Nimiq Pay uses the envelope, then **login, payout verification and redemption
 authorisation all fail on every real device**, and no amount of frontend work
@@ -86,16 +86,54 @@ changes that. This one test tells you which world you are in.
 |---|---|---|
 | 0.1 | Get a real challenge | In Nimiq Pay, tap Sign in. Before approving, copy the exact `message` the backend returned (visible in the network log, or log it temporarily in a dev build) |
 | 0.2 | Sign it | Approve the native dialog; capture the returned `publicKey` and `signature` hex |
-| 0.3 | Test raw | `cd backend && go run ./cmd/verify-sign-fixture -message '<exact message>' -wallet '<NQ… address>' -public-key '<hex>' -signature '<hex>' -scheme raw` |
-| 0.4 | Test envelope | Same command with `-scheme hub-envelope` |
+| 0.3 | Test both at once | `cd backend && go run ./cmd/verify-sign-fixture -scheme auto -message '<exact message>' -wallet '<NQ… address>' -public-key '<hex>' -signature '<hex>'` — it prints each scheme's result and names the one to configure |
+| 0.4 | Or test one at a time | Same command with `-scheme raw`, then `-scheme hub` |
 
 **Never pass a private key to that tool. It only needs the public half.**
 
 | Outcome | Meaning | Action |
 |---|---|---|
 | `raw` verifies | Production config is correct | Proceed; mark `LIVE SIGN INTEROPERABILITY: PASS` |
-| `hub-envelope` verifies | **P0.** Production verifies the wrong scheme | Report as `BACKEND RELEASE BLOCKER`; the backend's default preprocessor must change. Do **not** work around it in the frontend |
+| `hub` verifies | Production is configured for the wrong scheme | Set `NIMIQ_SIGNING_SCHEME=hub` and restart the backend — a configuration change, not a code change. Do **not** work around it in the frontend |
 | Neither verifies | The capture is wrong, or a third scheme is in use | Re-capture, checking the message is byte-exact (no trailing newline added by copying) |
+
+Status: `NOT EXECUTED`
+
+---
+
+## Step 0b — what does the Nimiq Pay payment scanner accept?
+
+**Also five minutes, and it decides the shape of the desktop purchase flow.**
+
+Nimpass wants the ordinary payment gesture: open Nimiq Pay, tap **Pay**, scan
+the desktop QR, confirm. That only works if the scanner accepts a Nimiq payment
+request *and* carries its `message` into the transaction's data field, because
+the backend binds a transaction to a purchase by the exact `NP1:` bytes
+(`application/payment.go:192`). No Nimiq document states what the scanner
+accepts, and the app's own strings contradict each other — so measure it.
+
+Full reasoning, evidence and the decision gates:
+`docs/NIMIQ-PAYMENT-QR-INVESTIGATION-2026-09-16.md`.
+
+```bash
+cd frontend/web
+node scripts/nimiq-pay-scan-probe.mjs --address "NQ.. your own testnet address"
+open nimiq-pay-scan-probe.html
+```
+
+| # | Step | How |
+|---|---|---|
+| 0b.1 | Testnet | Nimiq Pay → long-press Settings 10s → Testnet |
+| 0b.2 | Scan each candidate | Pay → scanner → scan A–E from the probe page. Record accepted/rejected and the **exact** error text |
+| 0b.3 | Read the prepared transaction | For any accepted candidate: is the recipient right, the amount prefilled, and the `NP1:` reference shown as a message? |
+| 0b.4 | Capture the app's own format | Nimiq Pay → Receive, set an amount, screenshot the QR. Whatever Nimiq Pay emits, its scanner reads |
+| 0b.5 | Prove the data survives | Only for a candidate accepted **with** the reference: send it once on testnet, then read that transaction's data field back from the chain (`getTransactionByHash`). UI text is not proof |
+
+| Outcome | Meaning | Action |
+|---|---|---|
+| A candidate keeps `NP1:` in `recipientData` | Scanner-first is possible | Record it in the investigation document, then build it together with the backend discovery work (§5 there) |
+| Payments accepted, data dropped | Scanner-first cannot be matched securely | Keep the Mini App payment path; do not fall back to amount-matching |
+| Everything rejected | Same, with a stronger reason | Keep the Mini App payment path |
 
 Status: `NOT EXECUTED`
 
@@ -106,13 +144,13 @@ Status: `NOT EXECUTED`
 | # | Check | Expected | Status |
 |---|---|---|---|
 | 1.1 | Open the Network URL in Nimiq Pay | Shell loads; **no** wallet prompt on page load | `NOT EXECUTED` |
-| 1.2 | Browse Discover → provider → package | Readable throughout, no dialogs | `NOT EXECUTED` |
+| 1.2 | Browse Discover → provider → Pass | Readable throughout, no dialogs | `NOT EXECUTED` |
 | 1.3 | Wallet control before sign-in | Shows **Sign in**, not a connected state | `NOT EXECUTED` |
 | 1.4 | Safe area, top | Header clears the status bar and notch | `NOT EXECUTED` |
 | 1.5 | Safe area, bottom | Sticky purchase bar clears the home indicator | `NOT EXECUTED` |
 | 1.6 | Rotate to landscape | No horizontal scroll; nothing clipped by the notch | `NOT EXECUTED` |
-| 1.7 | Empty marketplace | With no published packages, Discover shows real empty copy — never an error, never invented content | `NOT EXECUTED` |
-| 1.8 | Ordinary mobile browser (not Nimiq Pay) | Discover/provider/package all work; wallet actions explain the next step instead of failing | `NOT EXECUTED` |
+| 1.7 | Empty Discover | With no published Passes, Discover shows real empty copy — never an error, never invented content | `NOT EXECUTED` |
+| 1.8 | Ordinary mobile browser (not Nimiq Pay) | Discover/provider/Pass all work; wallet actions explain the next step instead of failing | `NOT EXECUTED` |
 
 ## 2. Authentication
 
@@ -144,7 +182,7 @@ Status: `NOT EXECUTED`
 | 3.10 | Airplane mode mid-verification | "Checking your payment…", never "failed", no retry | `NOT EXECUTED` |
 | 3.11 | **Lock the phone through finality, return** | State revalidates from the backend on foreground — no frozen spinner | `NOT EXECUTED` |
 | 3.12 | Double-tap Buy | Exactly one intent, one dialog | `NOT EXECUTED` |
-| 3.13 | Buy a package expiring within 35 min | "Too late to buy this package · You have not been charged" — not a payment error | `NOT EXECUTED` |
+| 3.13 | Buy a Pass expiring within 35 min | "Too late to buy this pass · You have not been charged" — not a payment error | `NOT EXECUTED` |
 
 ## 4. Pass
 
@@ -152,7 +190,7 @@ Status: `NOT EXECUTED`
 |---|---|---|---|
 | 4.1 | My Passes | Shows the provisioned pass with real counts | `NOT EXECUTED` |
 | 4.2 | Pass Detail | Original/used/remaining, status, expiry all from the backend | `NOT EXECUTED` |
-| 4.3 | Edit the package as the provider afterwards | The pass keeps its purchased terms — the snapshot does not follow | `NOT EXECUTED` |
+| 4.3 | Edit the published Pass as the provider afterwards | The purchased pass keeps its terms — the snapshot does not follow | `NOT EXECUTED` |
 | 4.4 | Session history | Empty before any redemption; no invented timeline | `NOT EXECUTED` |
 
 ## 5. Redemption — customer (Device A)
@@ -178,7 +216,7 @@ Status: `NOT EXECUTED`
 | 6.2 | Open Redeem | **No camera prompt** until Start scanning is tapped | `NOT EXECUTED` |
 | 6.3 | Start scanning → deny permission | "Camera access was blocked… type the code instead" | `NOT EXECUTED` |
 | 6.4 | Start scanning → allow → scan Device A's QR | **Decodes on this device** (see the iOS note below) | `NOT EXECUTED` |
-| 6.5 | After the scan | Context appears — service, package, session N, used/remaining, pass status, validity. **No session consumed yet** | `NOT EXECUTED` |
+| 6.5 | After the scan | Context appears — service, pass, session N, used/remaining, pass status, validity. **No session consumed yet** | `NOT EXECUTED` |
 | 6.6 | Customer identity on this screen | Absent — no wallet, no email, no id | `NOT EXECUTED` |
 | 6.7 | Tap Confirm session | Backend consumes exactly one; new counts come back | `NOT EXECUTED` |
 | 6.8 | Device A after the confirm | Updates to "Session used" with the backend's remaining count | `NOT EXECUTED` |
@@ -205,7 +243,7 @@ Status: `NOT EXECUTED`
 | 8.1 | Create a provider | Workspace becomes available | `NOT EXECUTED` |
 | 8.2 | Payout wallet verification | Requires **both** signatures (new wallet + owner) | `NOT EXECUTED` |
 | 8.3 | Try to change the payout wallet via profile edit | Refused — it cannot be mass-assigned | `NOT EXECUTED` |
-| 8.4 | Create a service, then a package | Both save as drafts | `NOT EXECUTED` |
+| 8.4 | Create a service, then a Pass | Both save as drafts | `NOT EXECUTED` |
 | 8.5 | Publish before payout verification | Refused with a clear reason | `NOT EXECUTED` |
 | 8.6 | Publish after verification | Succeeds | `NOT EXECUTED` |
 | 8.7 | **Find it in public Discover** | Appears with no developer intervention | `NOT EXECUTED` |
@@ -246,7 +284,15 @@ Observed:     Scanned in ~1s; lookup returned "Personal Training / Session 4";
   connection" and only the typed path (6.10) is walkable.
 - `crypto.randomUUID()` is also unavailable there; `createIdempotencyKey()`
   already falls back to `crypto.getRandomValues()`.
-- The browser → Nimiq Pay handoff (an **Open in Nimiq Pay** button) is
-  deliberately not offered from a LAN dev URL, because the opener cannot reach a
-  private address. It needs a public deployment to test.
+- Purchase QR uses the official `nimiqpay://miniapp?url=...` opener, with only
+  a purchase page URL. On LAN, both devices must reach the same Wi-Fi host.
+  Scanner/deep-link behavior is still a real-device check; Custom URL is the
+  manual fallback. The launcher supplies the LAN origin even on localhost.
+- Authenticate on the phone with the same customer wallet as desktop. Review
+  backend terms, check the selected wallet, explicitly confirm Pay's network,
+  then approve. A wrong sender never receives a purchased Pass.
+- Do not retry payment after a lost wallet response. The backend dispatch lock
+  persists across reloads/devices. A saved hash can be resubmitted; otherwise
+  investigate the wallet transaction history and submit its hash or escalate.
+  The existing submission TTL still applies; no automatic unlock was added.
 - **Never test routine flows against mainnet.**

@@ -3,7 +3,7 @@ import type { HTMLAttributes, ReactNode } from 'react'
 
 import { cn } from '@/lib/utils'
 
-const alertVariants = cva('flex gap-3 rounded-md border p-4 text-body', {
+const alertVariants = cva('flex gap-3 rounded-xl border p-4 text-body', {
   variants: {
     tone: {
       neutral: 'border-line bg-surface-muted text-ink',

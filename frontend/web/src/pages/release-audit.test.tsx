@@ -1,9 +1,10 @@
-import { screen, waitFor } from '@testing-library/react'
+import { screen, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { anOffer, domainError, mockApi, ok } from '@/test/mock-api'
-import { A_REFERENCE, aPass, aRedemptionChallenge, anAuthorizedChallenge, aPurchase } from '@/test/fixtures'
+import { aPublicPass, domainError, mockApi, ok } from '@/test/mock-api'
+import { aPurchasedPass, aRedemptionChallenge, aConsumedChallenge, aPurchase } from '@/test/fixtures'
+import { miniAppTransportDouble } from '@/test/wallet-transport'
 import { NO_CAPABILITIES } from '@/types/wallet'
 
 /**
@@ -22,7 +23,8 @@ vi.mock('@/lib/nimiq', async () => {
   return {
     ...actual,
     NIMIQ_NETWORK: 'TESTNET',
-    signMessage: (...a: unknown[]) => signMessage(...a),
+    currentTransport: () =>
+      miniAppTransportDouble({ signMessage: (...a: unknown[]) => signMessage(...a) }),
   }
 })
 
@@ -30,9 +32,9 @@ const { renderApp, stubSession, stubWallet } = await import('@/test/render')
 
 const WALLET = stubWallet()
 const SESSION = stubSession()
-const PASS = aPass()
-const OFFER = anOffer()
-const PACKAGE = OFFER.package
+const PASS = aPurchasedPass()
+const OFFER = aPublicPass()
+const CATALOG = OFFER.pass
 const CHALLENGE = aRedemptionChallenge()
 
 const challengesUrl = `/api/v1/passes/${PASS.id}/redemption-challenges`
@@ -54,52 +56,38 @@ function returnToForeground() {
 }
 
 describe('background and foreground (§22)', () => {
-  it('revalidates a live redemption code instead of trusting a frozen countdown', async () => {
-    // The phone locked while a QR was on screen. Timers were suspended, so the
-    // seconds shown are whatever they were then — but the provider may have
-    // redeemed it in the meantime, and only the backend knows.
-    let consumed = false
-
+  it('settles a redemption in one call, with nothing left polling behind it', async () => {
+    // There used to be a live QR on screen here, and a watcher re-reading the
+    // challenge until a provider confirmed it. Authorizing now spends the
+    // session in the same request, so the ceremony ends where it started — and
+    // nothing may keep asking the backend about a challenge that is finished.
     const { calls } = mockApi({
       [`/api/v1/passes/${PASS.id}`]: () => ok(PASS),
       [`/api/v1/passes/${PASS.id}/redemptions`]: () => ok({ items: [] }),
       [`GET ${challengesUrl}/current`]: () => domainError(404, 'NOT_FOUND', 'none'),
       [`POST ${challengesUrl}`]: () => ok(CHALLENGE),
-      [`POST ${detailUrl}/authorization`]: () => ok(anAuthorizedChallenge()),
-      [detailUrl]: () =>
-        consumed
-          ? ok(
-              anAuthorizedChallenge({
-                status: 'CONSUMED',
-                redemptionReference: null,
-                pass: {
-                  status: 'ACTIVE',
-                  originalSessions: 10,
-                  usedSessions: 4,
-                  remainingSessions: 6,
-                  expiresAt: null,
-                },
-              }),
-            )
-          : ok(anAuthorizedChallenge({ redemptionReference: null })),
+      [`POST ${detailUrl}/authorization`]: () => ok(aConsumedChallenge()),
     })
 
     const user = userEvent.setup()
     renderApp(`/passes/${PASS.id}`, { wallet: WALLET, session: SESSION })
-    await screen.findByRole('heading', { name: PASS.packageTitle, level: 1 })
+    await screen.findByRole('heading', { name: PASS.passTitle, level: 1 })
     await user.click(screen.getByRole('button', { name: /Use a session/i }))
-    await user.click(await screen.findByRole('button', { name: 'Continue' }))
-    await screen.findByText(A_REFERENCE)
+    await user.click(await screen.findByRole('button', { name: /Use a session/i }))
 
-    const before = calls.filter((c) => c.url === detailUrl).length
+    // Scoped to the dialog: the pass page behind it also says "sessions used".
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByText('Session used')).toBeInTheDocument()
 
-    // Provider redeems while the app is away, then the customer comes back.
-    consumed = true
+    const authorizations = calls.filter((c) => c.url === `${detailUrl}/authorization`)
+    expect(authorizations).toHaveLength(1)
+
+    // Coming back to the app must not restart a watch that no longer exists.
+    const before = calls.length
     returnToForeground()
-
-    // Answered from the backend on return, without waiting for a poll tick.
-    expect(await screen.findByText('Session used', {}, { timeout: 3000 })).toBeInTheDocument()
-    expect(calls.filter((c) => c.url === detailUrl).length).toBeGreaterThan(before)
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(calls.filter((c) => c.url === detailUrl)).toHaveLength(0)
+    expect(calls.length).toBe(before)
   }, 15_000)
 
   it('revalidates a settling purchase on return rather than showing a frozen spinner', async () => {
@@ -108,16 +96,16 @@ describe('background and foreground (§22)', () => {
     const id = INTENT.purchaseIntentId
 
     const { calls } = mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
       [`/api/v1/purchases/${id}`]: () =>
         ok(
           confirmed
-            ? { ...INTENT, status: 'completed', paymentRequest: null, passId: PASS.id }
+            ? { ...INTENT, status: 'completed', paymentRequest: null, purchasedPassId: PASS.id }
             : { ...INTENT, status: 'awaiting_finality', paymentRequest: null, transactionHash: 'a'.repeat(64) },
         ),
     })
 
-    renderApp(`/packages/${PACKAGE.id}?purchase=${id}`, { wallet: WALLET, session: SESSION })
+    renderApp(`/pass/${CATALOG.id}?purchase=${id}`, { wallet: WALLET, session: SESSION })
     expect(await screen.findByText('Finalising your payment…')).toBeInTheDocument()
 
     const before = calls.filter((c) => c.url === `/api/v1/purchases/${id}`).length
@@ -132,11 +120,11 @@ describe('background and foreground (§22)', () => {
     // Revalidation is for live state. A foreground event on an idle screen must
     // not turn every tab switch into traffic.
     const { calls } = mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
     })
 
-    renderApp(`/packages/${PACKAGE.id}`, { wallet: WALLET, session: SESSION })
-    await screen.findByRole('heading', { name: PACKAGE.title, level: 1 })
+    renderApp(`/pass/${CATALOG.id}`, { wallet: WALLET, session: SESSION })
+    await screen.findByRole('heading', { name: CATALOG.title, level: 1 })
 
     const before = calls.length
     returnToForeground()
@@ -155,27 +143,31 @@ describe('no wallet in the runtime (§21)', () => {
 
   it('browses the public marketplace without crashing', async () => {
     mockApi({
-      '/api/v1/public/packages': () => ok({ items: [OFFER] }),
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      '/api/v1/public/passes': () => ok({ items: [OFFER] }),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
     })
 
     renderApp('/discover', { wallet: NO_WALLET, session: null })
 
-    expect(await screen.findByText(PACKAGE.title)).toBeInTheDocument()
+    expect(await screen.findByText(CATALOG.title)).toBeInTheDocument()
     // No error boundary, no blank page.
     expect(screen.queryByText(/something went wrong/i)).not.toBeInTheDocument()
   })
 
-  it('explains the next step on a package instead of offering an impossible buy', async () => {
-    mockApi({ [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER) })
+  it('explains the next step on a pass instead of offering an impossible buy', async () => {
+    mockApi({ [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER) })
 
-    renderApp(`/packages/${PACKAGE.id}`, { wallet: NO_WALLET, session: null })
+    renderApp(`/pass/${CATALOG.id}`, { wallet: NO_WALLET, session: null })
 
-    await screen.findByRole('heading', { name: PACKAGE.title, level: 1 })
-    // Either a handoff link or a plain explanation — never a dead Buy button
-    // that appears to work.
+    await screen.findByRole('heading', { name: CATALOG.title, level: 1 })
+    // This runtime reached neither transport — no injected provider and no Hub.
+    // Rare, and the only honest answer is to say so rather than arm a Buy
+    // button that leads nowhere. Every armed Buy control is disabled here.
+    for (const button of screen.queryAllByRole('button', { name: /Buy with NIM/i })) {
+      expect(button).toBeDisabled()
+    }
     const body = document.body.textContent ?? ''
-    expect(body).toMatch(/Nimiq Pay/i)
+    expect(body).toMatch(/couldn't reach a Nimiq wallet/i)
     expect(screen.queryByText(/something went wrong/i)).not.toBeInTheDocument()
   })
 
@@ -191,11 +183,11 @@ describe('no wallet in the runtime (§21)', () => {
 
 describe('first run on an empty marketplace (§27)', () => {
   it('shows real empty-state copy, not an error and not invented content', async () => {
-    mockApi({ '/api/v1/public/packages': () => ok({ items: [] }) })
+    mockApi({ '/api/v1/public/passes': () => ok({ items: [] }) })
 
     renderApp('/discover', { wallet: WALLET, session: null })
 
-    // Something human, and demonstrably no fabricated provider or package.
+    // Something human, and demonstrably no fabricated provider or Pass.
     await waitFor(() => expect(screen.queryByText(/loading/i)).not.toBeInTheDocument())
     const body = document.body.textContent ?? ''
     expect(body).not.toMatch(/Alex Fitness|Personal Training/)
@@ -229,10 +221,10 @@ describe('session expiry mid-flow (§23)', () => {
 
     const user = userEvent.setup()
     renderApp(`/passes/${PASS.id}`, { wallet: WALLET, session: SESSION })
-    await screen.findByRole('heading', { name: PASS.packageTitle, level: 1 })
+    await screen.findByRole('heading', { name: PASS.passTitle, level: 1 })
     await user.click(screen.getByRole('button', { name: /Use a session/i }))
 
-    expect(await screen.findByText('Sign in again')).toBeInTheDocument()
+    expect(await screen.findByText('Log in again')).toBeInTheDocument()
     // No wallet dialog was opened for a request that could never succeed.
     expect(signMessage).not.toHaveBeenCalled()
     // And no raw code reached the customer.
@@ -246,13 +238,15 @@ describe('session expiry mid-flow (§23)', () => {
 
     renderApp('/provider', { wallet: WALLET, session: null })
 
+    // The workspace is not rendered at all: no chrome, no navigation, nothing
+    // implying this wallet has anything to manage.
+    expect(
+      await screen.findByRole('heading', { name: 'Log in to manage your workspace' }),
+    ).toBeInTheDocument()
     await waitFor(() =>
-      expect(screen.queryByRole('navigation', { name: 'Provider workspace' })).toBeTruthy(),
+      expect(screen.queryByRole('navigation', { name: 'Provider workspace' })).toBeNull(),
     )
-    // Workspace chrome may render, but the gated region must ask for sign-in
-    // rather than showing provider data.
-    const body = document.body.textContent ?? ''
-    expect(body).toMatch(/sign in/i)
+    expect(document.body.textContent ?? '').toMatch(/log in/i)
   })
 })
 
@@ -293,17 +287,17 @@ describe('plain language on customer surfaces (§38, §39)', () => {
   }
 
   it('keeps Discover readable', async () => {
-    mockApi({ '/api/v1/public/packages': () => ok({ items: [OFFER] }) })
+    mockApi({ '/api/v1/public/passes': () => ok({ items: [OFFER] }) })
     renderApp('/discover', { wallet: WALLET, session: null })
-    await screen.findByText(PACKAGE.title)
+    await screen.findByText(CATALOG.title)
     assertPlainLanguage('Discover')
   })
 
-  it('keeps Package Detail readable', async () => {
-    mockApi({ [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER) })
-    renderApp(`/packages/${PACKAGE.id}`, { wallet: WALLET, session: SESSION })
-    await screen.findByRole('heading', { name: PACKAGE.title, level: 1 })
-    assertPlainLanguage('Package Detail')
+  it('keeps Pass Detail readable', async () => {
+    mockApi({ [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER) })
+    renderApp(`/pass/${CATALOG.id}`, { wallet: WALLET, session: SESSION })
+    await screen.findByRole('heading', { name: CATALOG.title, level: 1 })
+    assertPlainLanguage('Pass Detail')
   })
 
   it('keeps Pass Detail readable', async () => {
@@ -313,14 +307,14 @@ describe('plain language on customer surfaces (§38, §39)', () => {
       [`GET ${challengesUrl}/current`]: () => domainError(404, 'NOT_FOUND', 'none'),
     })
     renderApp(`/passes/${PASS.id}`, { wallet: WALLET, session: SESSION })
-    await screen.findByRole('heading', { name: PASS.packageTitle, level: 1 })
+    await screen.findByRole('heading', { name: PASS.passTitle, level: 1 })
     assertPlainLanguage('Pass Detail')
   })
 
   it('keeps the finality wait readable — the most jargon-prone screen', async () => {
     const INTENT = aPurchase()
     mockApi({
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
       [`/api/v1/purchases/${INTENT.purchaseIntentId}`]: () =>
         ok({
           ...INTENT,
@@ -330,7 +324,7 @@ describe('plain language on customer surfaces (§38, §39)', () => {
         }),
     })
 
-    renderApp(`/packages/${PACKAGE.id}?purchase=${INTENT.purchaseIntentId}`, {
+    renderApp(`/pass/${CATALOG.id}?purchase=${INTENT.purchaseIntentId}`, {
       wallet: WALLET,
       session: SESSION,
     })
@@ -342,9 +336,9 @@ describe('plain language on customer surfaces (§38, §39)', () => {
   })
 
   it('prices in NIM, never in raw integer Luna', async () => {
-    mockApi({ [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER) })
-    renderApp(`/packages/${PACKAGE.id}`, { wallet: WALLET, session: SESSION })
-    await screen.findByRole('heading', { name: PACKAGE.title, level: 1 })
+    mockApi({ [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER) })
+    renderApp(`/pass/${CATALOG.id}`, { wallet: WALLET, session: SESSION })
+    await screen.findByRole('heading', { name: CATALOG.title, level: 1 })
 
     const body = document.body.textContent ?? ''
     // 25_000_000 Luna is 250 NIM. The Luna integer must not be on screen.
@@ -361,7 +355,11 @@ describe('wallet account change (§24)', () => {
     // redemption signatures from the new account are refused server-side —
     // correctly, but confusingly unless the app says why.
     const OTHER = 'NQ22 1111 1111 1111 1111 1111 1111 1111 1111'
-    mockApi({ '/api/v1/public/packages': () => ok({ items: [] }) })
+    mockApi({
+      '/api/v1/public/passes': () => ok({ items: [] }),
+      '/api/v1/purchases': () => ok({ items: [] }),
+      '/api/v1/providers': () => ok({ items: [] }),
+    })
 
     const user = userEvent.setup()
     renderApp('/discover', {
@@ -369,27 +367,39 @@ describe('wallet account change (§24)', () => {
       session: SESSION,
     })
 
-    await user.click(await screen.findByRole('button', { name: /NQ07/i }))
+    // The header marks the drift; the profile page explains it.
+    expect(await screen.findByText('Wallet changed')).toBeInTheDocument()
+    await user.click(await screen.findByRole('link', { name: 'Profile' }))
 
     expect(await screen.findByText("You've switched wallets")).toBeInTheDocument()
     expect(screen.getByText(/payments and session codes will be refused/i)).toBeInTheDocument()
   })
 
   it('says nothing when the wallet and the session agree', async () => {
-    mockApi({ '/api/v1/public/packages': () => ok({ items: [] }) })
+    mockApi({
+      '/api/v1/public/passes': () => ok({ items: [] }),
+      '/api/v1/purchases': () => ok({ items: [] }),
+      '/api/v1/providers': () => ok({ items: [] }),
+    })
 
     const user = userEvent.setup()
     // stubWallet's default account is the same wallet stubSession signs in with.
     renderApp('/discover', { wallet: WALLET, session: SESSION })
 
-    await user.click(await screen.findByRole('button', { name: /NQ07/i }))
+    await user.click(await screen.findByRole('link', { name: 'Profile' }))
+    await screen.findByRole('heading', { name: 'Profile', level: 1 })
     expect(screen.queryByText("You've switched wallets")).not.toBeInTheDocument()
+    expect(screen.queryByText('Wallet changed')).not.toBeInTheDocument()
   })
 
   it('does not treat a differently-spaced address as a different wallet', async () => {
     // Addresses are displayed spaced and passed around unspaced. Comparing raw
     // strings would raise a mismatch warning on every single session.
-    mockApi({ '/api/v1/public/packages': () => ok({ items: [] }) })
+    mockApi({
+      '/api/v1/public/passes': () => ok({ items: [] }),
+      '/api/v1/purchases': () => ok({ items: [] }),
+      '/api/v1/providers': () => ok({ items: [] }),
+    })
 
     const user = userEvent.setup()
     renderApp('/discover', {
@@ -397,28 +407,29 @@ describe('wallet account change (§24)', () => {
       session: SESSION,
     })
 
-    await user.click(await screen.findByRole('button', { name: /NQ07/i }))
+    await user.click(await screen.findByRole('link', { name: 'Profile' }))
+    await screen.findByRole('heading', { name: 'Profile', level: 1 })
     expect(screen.queryByText("You've switched wallets")).not.toBeInTheDocument()
   })
 })
 
 describe('provider content reaches the public marketplace (§26)', () => {
-  it('surfaces a published package to a stranger, and hides an unpublished one', async () => {
+  it('surfaces a published pass to a stranger, and hides an unpublished one', async () => {
     // The provider half of the competition story: what a provider publishes has
     // to become something a stranger can buy, with no developer touching the
     // database in between — and a draft must stay invisible until then.
     let published = false
 
     const { calls } = mockApi({
-      '/api/v1/public/packages': () => ok({ items: published ? [OFFER] : [] }),
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () =>
+      '/api/v1/public/passes': () => ok({ items: published ? [OFFER] : [] }),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () =>
         published ? ok(OFFER) : domainError(404, 'NOT_FOUND', 'not published'),
     })
 
     // Draft: a stranger sees nothing, and the page 404s rather than leaking it.
     const draft = renderApp('/discover', { wallet: WALLET, session: null })
     await waitFor(() => expect(screen.queryByText(/loading/i)).not.toBeInTheDocument())
-    expect(screen.queryByText(PACKAGE.title)).not.toBeInTheDocument()
+    expect(screen.queryByText(CATALOG.title)).not.toBeInTheDocument()
     draft.unmount()
 
     // The provider publishes.
@@ -426,12 +437,12 @@ describe('provider content reaches the public marketplace (§26)', () => {
 
     // Published: the same public route now carries it, for an anonymous visitor.
     mockApi({
-      '/api/v1/public/packages': () => ok({ items: [OFFER] }),
-      [`/api/v1/public/packages/${PACKAGE.id}`]: () => ok(OFFER),
+      '/api/v1/public/passes': () => ok({ items: [OFFER] }),
+      [`/api/v1/public/passes/${CATALOG.id}`]: () => ok(OFFER),
     })
     renderApp('/discover', { wallet: WALLET, session: null })
 
-    expect(await screen.findByText(PACKAGE.title)).toBeInTheDocument()
+    expect(await screen.findByText(CATALOG.title)).toBeInTheDocument()
     // Served from the public endpoint, with no session involved.
     expect(calls.every((c) => c.url.startsWith('/api/v1/public/'))).toBe(true)
   })

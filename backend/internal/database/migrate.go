@@ -44,6 +44,10 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, directory string) error {
 	if _, err := tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version bigint PRIMARY KEY, checksum char(64) NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
 		return fmt.Errorf("create migration history: %w", err)
 	}
+	var highest int64
+	if err := tx.QueryRow(ctx, `SELECT coalesce(max(version),0) FROM schema_migrations`).Scan(&highest); err != nil {
+		return err
+	}
 	seen := make(map[int64]bool, len(files))
 	for _, name := range files {
 		prefix, _, ok := strings.Cut(name, "_")
@@ -74,6 +78,9 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, directory string) error {
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("check migration %s: %w", name, err)
+		}
+		if version <= highest {
+			return fmt.Errorf("migration %s is older than applied history", name)
 		}
 		if _, err := tx.Exec(ctx, string(data)); err != nil {
 			return fmt.Errorf("apply migration %s: %w", name, err)

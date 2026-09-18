@@ -19,6 +19,8 @@ const badgeVariants = cva(
         warning: 'bg-warning-soft text-warning',
         danger: 'bg-danger-soft text-danger',
         info: 'bg-info-soft text-info',
+        /** On the dark pass surface, where the soft tones disappear (§53). */
+        onPass: 'bg-pass-raised text-pass-ink ring-1 ring-inset ring-pass-line',
       },
     },
     defaultVariants: { tone: 'neutral' },

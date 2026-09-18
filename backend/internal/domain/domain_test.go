@@ -25,7 +25,7 @@ func mustWallet(t *testing.T, suffix string) WalletAddress {
 	return wallet
 }
 
-func purchaseFixture(t *testing.T, now time.Time, expiration *time.Time) (Package, Purchase) {
+func purchaseFixture(t *testing.T, now time.Time, expiration *time.Time) (Pass, Purchase) {
 	t.Helper()
 	owner := mustWallet(t, "A")
 	provider, err := NewProvider(mustID(t), mustID(t), "Alex Fitness", now)
@@ -38,7 +38,7 @@ func purchaseFixture(t *testing.T, now time.Time, expiration *time.Time) (Packag
 	if err != nil {
 		t.Fatal(err)
 	}
-	pkg, err := NewPackage(mustID(t), provider.ID, service.ID, "10 Sessions", "Prepaid", 10, 25_000_000, NewExpirationPolicy(expiration), now)
+	pkg, err := NewPass(mustID(t), provider.ID, service.ID, "10 Sessions", "Prepaid", 10, 25_000_000, NewExpirationPolicy(expiration), "", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,8 +71,8 @@ func confirmFixture(t *testing.T, purchase *Purchase, now time.Time) {
 	if err := purchase.ConfirmVerified(VerifiedPayment{
 		Hash: hash, Sender: purchase.ExpectedWallet, Recipient: purchase.Snapshot.Recipient,
 		AmountLuna: purchase.Snapshot.PriceLuna, Reference: purchase.PaymentReference,
-		Network: purchase.Snapshot.Network, Included: true, IncludedAt: now.Add(2 * time.Minute), Finalized: true, InclusionBlock: 1, FinalityBlock: 2,
-	}, now.Add(3*time.Minute)); err != nil {
+		Network: purchase.Snapshot.Network, Included: true, IncludedAt: now.Add(2 * time.Minute), Finalized: true, InclusionBlock: 1, FinalityBlock: 2, FinalizedAt: now.Add(2*time.Minute + time.Second),
+	}, ConfirmOnFinality, now.Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -113,13 +113,13 @@ func TestCriticalValueObjectsRejectInvalidValues(t *testing.T) {
 	}
 }
 
-func TestPackageRejectsZeroSessionsAndPrice(t *testing.T) {
+func TestPassRejectsZeroSessionsAndPrice(t *testing.T) {
 	now := time.Now().UTC()
 	providerID, serviceID := mustID(t), mustID(t)
-	if _, err := NewPackage(mustID(t), providerID, serviceID, "Package", "", 0, 100, ExpirationPolicy{}, now); err == nil {
+	if _, err := NewPass(mustID(t), providerID, serviceID, "10 Sessions", "", 0, 100, ExpirationPolicy{}, "", now); err == nil {
 		t.Fatal("zero sessions accepted")
 	}
-	if _, err := NewPackage(mustID(t), providerID, serviceID, "Package", "", 1, 0, ExpirationPolicy{}, now); err == nil {
+	if _, err := NewPass(mustID(t), providerID, serviceID, "10 Sessions", "", 1, 0, ExpirationPolicy{}, "", now); err == nil {
 		t.Fatal("zero price accepted")
 	}
 }
@@ -131,12 +131,12 @@ func TestPurchaseSnapshotAndTransitions(t *testing.T) {
 	if purchase.ExpiresAt.Sub(purchase.CreatedAt) != 30*time.Minute {
 		t.Fatal("wrong purchase intent TTL")
 	}
-	pkg.Title = "Changed Package"
+	pkg.Title = "Changed Pass"
 	pkg.PriceLuna = 1
 	pkg.Sessions = 2
 	expiry = expiry.Add(24 * time.Hour)
-	if purchase.Snapshot.PackageTitle != "10 Sessions" || purchase.Snapshot.PriceLuna != 25_000_000 || purchase.Snapshot.Sessions != 10 {
-		t.Fatal("purchase snapshot changed with package")
+	if purchase.Snapshot.PassTitle != "10 Sessions" || purchase.Snapshot.PriceLuna != 25_000_000 || purchase.Snapshot.Sessions != 10 {
+		t.Fatal("purchase snapshot changed with catalog Pass")
 	}
 	if purchase.Snapshot.Expiration.ExpiresAt.Equal(expiry) {
 		t.Fatal("expiration snapshot shares mutable pointer")
@@ -159,15 +159,15 @@ func TestPurchaseSnapshotAndTransitions(t *testing.T) {
 	if err := purchase.BeginVerification(now.Add(2 * time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	wrong := VerifiedPayment{Hash: purchase.TransactionHash, Sender: purchase.ExpectedWallet, Recipient: purchase.Snapshot.Recipient, AmountLuna: 1, Reference: purchase.PaymentReference, Network: NimiqTestnet, Included: true, IncludedAt: now.Add(2 * time.Minute), Finalized: true, InclusionBlock: 1, FinalityBlock: 2}
-	if err := purchase.ConfirmVerified(wrong, now.Add(3*time.Minute)); err == nil {
+	wrong := VerifiedPayment{Hash: purchase.TransactionHash, Sender: purchase.ExpectedWallet, Recipient: purchase.Snapshot.Recipient, AmountLuna: 1, Reference: purchase.PaymentReference, Network: NimiqTestnet, Included: true, IncludedAt: now.Add(2 * time.Minute), Finalized: true, InclusionBlock: 1, FinalityBlock: 2, FinalizedAt: now.Add(2*time.Minute + time.Second)}
+	if err := purchase.ConfirmVerified(wrong, ConfirmOnFinality, now.Add(3*time.Minute)); err == nil {
 		t.Fatal("wrong amount confirmed")
 	}
 	if purchase.Status != PurchaseVerifying {
 		t.Fatal("failed match mutated purchase")
 	}
 	wrong.AmountLuna = purchase.Snapshot.PriceLuna
-	if err := purchase.ConfirmVerified(wrong, now.Add(3*time.Minute)); err != nil {
+	if err := purchase.ConfirmVerified(wrong, ConfirmOnFinality, now.Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if purchase.Status != PurchaseConfirmed || purchase.VerifiedSender != purchase.ExpectedWallet {
@@ -195,7 +195,7 @@ func TestFixedExpirationPurchaseCutoffIsInclusiveBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pkg, err := NewPackage(mustID(t), provider.ID, service.ID, "10 Sessions", "Prepaid", 10, 25_000_000, NewExpirationPolicy(&expires), now)
+	pkg, err := NewPass(mustID(t), provider.ID, service.ID, "10 Sessions", "Prepaid", 10, 25_000_000, NewExpirationPolicy(&expires), "", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,18 +213,18 @@ func TestFixedExpirationPurchaseCutoffIsInclusiveBoundary(t *testing.T) {
 		t.Fatalf("after cutoff accepted: %v", err)
 	}
 	if pkg.Expiration.ExpiresAt == nil || !pkg.Expiration.ExpiresAt.Equal(expires) {
-		t.Fatal("cutoff mutated package expiration")
+		t.Fatal("cutoff mutated pass expiration")
 	}
 }
 
-func TestOpenEndedPackageIgnoresPurchaseCutoff(t *testing.T) {
+func TestOpenEndedPassIgnoresPurchaseCutoff(t *testing.T) {
 	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
 	if _, purchase := purchaseFixture(t, now, nil); purchase.Snapshot.Expiration.ExpiresAt != nil {
-		t.Fatal("open-ended package snapshotted an expiration")
+		t.Fatal("open-ended pass snapshotted an expiration")
 	}
 }
 
-func TestFinalizedPaymentAfterPackageExpiryRequiresCompensationNotPass(t *testing.T) {
+func TestFinalizedPaymentAfterPassExpiryRequiresCompensationNotPass(t *testing.T) {
 	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
 	expires := now.Add(36 * time.Minute)
 	_, purchase := purchaseFixture(t, now, &expires)
@@ -242,28 +242,28 @@ func TestFinalizedPaymentAfterPackageExpiryRequiresCompensationNotPass(t *testin
 		Hash: hash, Sender: purchase.ExpectedWallet, Recipient: purchase.Snapshot.Recipient,
 		AmountLuna: purchase.Snapshot.PriceLuna, Reference: purchase.PaymentReference,
 		Network: purchase.Snapshot.Network, Included: true, IncludedAt: now.Add(2 * time.Minute),
-		Finalized: true, InclusionBlock: 1, FinalityBlock: 2,
+		Finalized: true, InclusionBlock: 1, FinalityBlock: 2, FinalizedAt: now.Add(2*time.Minute + time.Second),
 	}
 	later := expires.Add(time.Minute)
-	if err := purchase.ConfirmVerified(payment, later); err == nil {
-		t.Fatal("expired package confirmed into a pass-capable purchase")
+	if err := purchase.ConfirmVerified(payment, ConfirmOnFinality, later); err == nil {
+		t.Fatal("expired pass confirmed into a purchased-pass-capable purchase")
 	}
-	if err := purchase.ReconcileVerified(payment, later); err == nil {
-		t.Fatal("expired package silently confirmed")
+	if err := purchase.ReconcileVerified(payment, ConfirmOnFinality, later); err == nil {
+		t.Fatal("expired pass silently confirmed")
 	}
 	if purchase.Status != PurchaseVerifying {
 		t.Fatal("rejected confirmation mutated purchase")
 	}
-	if err := purchase.ReconcileCompensationRequired(payment, now.Add(3*time.Minute)); err == nil {
-		t.Fatal("compensation accepted before package expiry")
+	if err := purchase.ReconcileCompensationRequired(payment, ConfirmOnFinality, now.Add(3*time.Minute)); err == nil {
+		t.Fatal("compensation accepted before pass expiry")
 	}
-	if err := purchase.ReconcileCompensationRequired(payment, later); err != nil {
+	if err := purchase.ReconcileCompensationRequired(payment, ConfirmOnFinality, later); err != nil {
 		t.Fatal(err)
 	}
 	if purchase.Status != PurchaseCompensationRequired || purchase.TransactionHash != hash || purchase.ConfirmedAt == nil {
 		t.Fatal("compensation did not preserve verified payment")
 	}
-	if _, err := NewPass(mustID(t), purchase); err == nil {
+	if _, err := NewPurchasedPass(mustID(t), purchase, mustID(t)); err == nil {
 		t.Fatal("compensation purchase provisioned a pass")
 	}
 	if err := purchase.Fail(later); err == nil {
@@ -301,23 +301,23 @@ func TestExpiredIntentCanOnlyReconcileVerifiedSettlementWithinGrace(t *testing.T
 		Hash: strings.Repeat("b", 64), Sender: purchase.ExpectedWallet,
 		Recipient: purchase.Snapshot.Recipient, AmountLuna: purchase.Snapshot.PriceLuna,
 		Reference: purchase.PaymentReference, Network: purchase.Snapshot.Network,
-		Included: true, IncludedAt: purchase.ExpiresAt.Add(4 * time.Minute), Finalized: true, InclusionBlock: 1, FinalityBlock: 2,
+		Included: true, IncludedAt: purchase.ExpiresAt.Add(4 * time.Minute), Finalized: true, InclusionBlock: 1, FinalityBlock: 2, FinalizedAt: purchase.ExpiresAt.Add(4*time.Minute + time.Second),
 	}
 	late := evidence
 	late.IncludedAt = purchase.ExpiresAt.Add(6 * time.Minute)
-	if err := purchase.ReconcileVerified(late, now.Add(40*time.Minute)); err == nil {
+	if err := purchase.ReconcileVerified(late, ConfirmOnFinality, now.Add(40*time.Minute)); err == nil {
 		t.Fatal("settlement outside grace accepted")
 	}
 	if purchase.Status != PurchaseExpired {
 		t.Fatal("rejected settlement mutated intent")
 	}
-	if err := purchase.ReconcileVerified(evidence, now.Add(40*time.Minute)); err != nil {
+	if err := purchase.ReconcileVerified(evidence, ConfirmOnFinality, now.Add(40*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if purchase.Status != PurchaseConfirmed || purchase.TransactionHash != evidence.Hash {
 		t.Fatal("verified settlement did not recover expired intent")
 	}
-	if err := purchase.ReconcileVerified(evidence, now.Add(41*time.Minute)); err == nil {
+	if err := purchase.ReconcileVerified(evidence, ConfirmOnFinality, now.Add(41*time.Minute)); err == nil {
 		t.Fatal("confirmed payment reconciled twice")
 	}
 }
@@ -326,11 +326,11 @@ func TestPassConsumesExactlyOneAndCompletes(t *testing.T) {
 	now := time.Now().UTC()
 	_, purchase := purchaseFixture(t, now, nil)
 	confirmFixture(t, &purchase, now)
-	pass, err := NewPass(mustID(t), purchase)
+	pass, err := NewPurchasedPass(mustID(t), purchase, mustID(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pass.OriginalSessions != 10 || pass.UsedSessions != 0 || pass.RemainingSessions != 10 || pass.Status != PassActive {
+	if pass.OriginalSessions != 10 || pass.UsedSessions != 0 || pass.RemainingSessions != 10 || pass.Status != PurchasedPassActive {
 		t.Fatal("incorrect initial pass")
 	}
 	for i := 1; i <= 10; i++ {
@@ -341,7 +341,7 @@ func TestPassConsumesExactlyOneAndCompletes(t *testing.T) {
 			t.Fatalf("incorrect balance after session %d", i)
 		}
 	}
-	if pass.Status != PassCompleted || pass.CompletedAt == nil {
+	if pass.Status != PurchasedPassCompleted || pass.CompletedAt == nil {
 		t.Fatal("last session did not complete pass")
 	}
 	if err := pass.ConsumeSession(now.Add(time.Hour)); err == nil {
@@ -357,7 +357,7 @@ func TestPassExpirationBlocksRedemption(t *testing.T) {
 	expiry := now.Add(24 * time.Hour)
 	_, purchase := purchaseFixture(t, now, &expiry)
 	confirmFixture(t, &purchase, now)
-	pass, err := NewPass(mustID(t), purchase)
+	pass, err := NewPurchasedPass(mustID(t), purchase, mustID(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +367,7 @@ func TestPassExpirationBlocksRedemption(t *testing.T) {
 	if err := pass.ConsumeSession(expiry); err == nil {
 		t.Fatal("expired pass consumed")
 	}
-	if !pass.ExpireIfDue(expiry) || pass.Status != PassExpired {
+	if !pass.ExpireIfDue(expiry) || pass.Status != PurchasedPassExpired {
 		t.Fatal("pass not expired")
 	}
 }
@@ -382,7 +382,7 @@ func TestRedemptionRequiresSignatureAndIsSingleUse(t *testing.T) {
 	now := time.Now().UTC()
 	_, purchase := purchaseFixture(t, now, nil)
 	confirmFixture(t, &purchase, now)
-	pass, err := NewPass(mustID(t), purchase)
+	pass, err := NewPurchasedPass(mustID(t), purchase, mustID(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +427,7 @@ func TestRedemptionExpiryAndPassBinding(t *testing.T) {
 	now := time.Now().UTC()
 	_, purchase := purchaseFixture(t, now, nil)
 	confirmFixture(t, &purchase, now)
-	pass, err := NewPass(mustID(t), purchase)
+	pass, err := NewPurchasedPass(mustID(t), purchase, mustID(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,15 +459,108 @@ func TestRedemptionExpiryAndPassBinding(t *testing.T) {
 	}
 }
 
+func TestParseAccent(t *testing.T) {
+	if got, err := ParseAccent(""); err != nil || got != "" {
+		t.Fatalf("empty accent rejected: %q %v", got, err)
+	}
+	if got, err := ParseAccent("PLUM"); err != nil || got != AccentPlum {
+		t.Fatalf("plum rejected: %q %v", got, err)
+	}
+	if _, err := ParseAccent("NEON"); err == nil {
+		t.Fatal("unknown accent accepted")
+	}
+}
+
 func TestRedemptionChallengeRejectsLongTTL(t *testing.T) {
 	now := time.Now().UTC()
 	_, purchase := purchaseFixture(t, now, nil)
 	confirmFixture(t, &purchase, now)
-	pass, err := NewPass(mustID(t), purchase)
+	pass, err := NewPurchasedPass(mustID(t), purchase, mustID(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := NewRedemptionChallenge(mustID(t), mustID(t), pass, pass.Snapshot.ProviderID, now.Add(4*time.Minute), time.Hour); err == nil {
 		t.Fatal("long-lived challenge accepted")
+	}
+}
+
+// Luna is the authoritative unit; NIM is what a human and a payment link see.
+// A wrong conversion here is a customer paying 100,000x the price, or a Pass
+// issued for a hundred-thousandth of it, so both directions are pinned.
+func TestLunaNIMConversionIsExactAndReversible(t *testing.T) {
+	cases := []struct {
+		luna Luna
+		nim  string
+	}{
+		{1, "0.00001"},
+		{LunaPerNIM, "1"},
+		{150_000, "1.5"},
+		{123_456, "1.23456"},
+		{25_000_000, "250"},
+		// The mission's own example: 1000 NIM is 100,000,000 Luna.
+		{100_000_000, "1000"},
+		{100_000_001, "1000.00001"},
+	}
+	for _, c := range cases {
+		if got := c.luna.NIM(); got != c.nim {
+			t.Fatalf("Luna(%d).NIM() = %q, want %q", c.luna, got, c.nim)
+		}
+		back, err := ParseNIM(c.nim)
+		if err != nil || back != c.luna {
+			t.Fatalf("ParseNIM(%q) = %d, %v; want %d", c.nim, back, err, c.luna)
+		}
+	}
+}
+
+// 1000 NIM must never be encodable as anything a wallet would read as 800.
+func TestLunaNIMNeverLosesPrecision(t *testing.T) {
+	for luna := Luna(1); luna < 300_000; luna += 7 {
+		back, err := ParseNIM(luna.NIM())
+		if err != nil || back != luna {
+			t.Fatalf("round trip broke at %d Luna: %q -> %d (%v)", luna, luna.NIM(), back, err)
+		}
+	}
+}
+
+// The wallet half of ADR-012's rule, restated where an intent is built.
+//
+// The account half — a provider buying from their own catalogue — is decided
+// against `providers.owner_identity_id` and is already an invariant on
+// `NewPurchasedPass`. This is the other half: whoever owns the provider
+// record, an intent whose payee is the buying wallet would move no value, and
+// it cannot be constructed.
+func TestAPurchaseThatPaysTheBuyerCannotBeBuilt(t *testing.T) {
+	now := time.Now().UTC()
+	buyer := mustWallet(t, "C")
+	provider, err := NewProvider(mustID(t), mustID(t), "Alex Fitness", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.PayoutWallet = buyer
+	provider.PayoutVerifiedAt = &now
+	service, err := NewService(mustID(t), provider.ID, "Personal Training", "Training", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pass, err := NewPass(mustID(t), provider.ID, service.ID, "10 Sessions", "Prepaid", 10, 25_000_000, NewExpirationPolicy(nil), "", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pass.Publish(now); err != nil {
+		t.Fatal(err)
+	}
+	reference, err := NewPaymentReference()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Spaced and lower-cased, so the comparison is shown to be between
+	// canonical forms rather than between spellings.
+	spaced := WalletAddress(strings.ToLower(string(buyer[:4]) + " " + string(buyer[4:])))
+	if _, err := NewPurchase(mustID(t), mustID(t), spaced, pass, service, provider, NimiqTestnet, reference, now); !errors.Is(err, ErrSelfPurchase) {
+		t.Fatalf("an intent paying its own buyer was built: %v", err)
+	}
+	// A different wallet buying the same pass is an ordinary purchase.
+	if _, err := NewPurchase(mustID(t), mustID(t), mustWallet(t, "D"), pass, service, provider, NimiqTestnet, reference, now); err != nil {
+		t.Fatalf("ordinary purchase: %v", err)
 	}
 }

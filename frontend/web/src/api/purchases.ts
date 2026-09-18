@@ -2,12 +2,24 @@ import type { Purchase } from '@/types/domain'
 
 import { apiRequest } from './client'
 
+export function beginWalletAttempt(id: string, attemptId: string): Promise<Purchase> {
+  return apiRequest<Purchase>(`/api/v1/purchases/${encodeURIComponent(id)}/wallet-attempts`, {
+    method: 'POST', body: { attemptId },
+  })
+}
+
+export function releaseWalletAttempt(id: string, attemptId: string): Promise<void> {
+  return apiRequest<void>(`/api/v1/purchases/${encodeURIComponent(id)}/wallet-attempts/${encodeURIComponent(attemptId)}/release`, {
+    method: 'POST',
+  })
+}
+
 /**
  * Purchase intents and payment settlement (`backend/openapi.yaml`,
  * `/purchases/*`).
  *
  * The shape of this module is the payment security model in miniature: the
- * client asks for a package, reports a hash, and asks for a re-check. It never
+ * client asks for a pass, reports a hash, and asks for a re-check. It never
  * asserts an outcome. There is deliberately no endpoint that marks a purchase
  * paid (docs/08-ARCHITECTURE.md §63, docs/05 §34).
  */
@@ -15,31 +27,31 @@ import { apiRequest } from './client'
 /**
  * POST /purchases → 201 (new) or 200 (existing recoverable intent)
  *
- * Body is `CreatePurchase`: `{ packageId }`. Nothing else — the schema is
+ * Body is `CreatePurchase`: `{ passId }`. Nothing else — the schema is
  * `additionalProperties: false`, and price, recipient, amount and payment
  * reference all come *back* from the backend (docs/08 §71, docs/05 §13-§14).
  * The authenticated wallet is the only customer identity, so no wallet is sent.
  *
- * 200 rather than 201 means an active unpaid intent for this wallet and package
+ * 200 rather than 201 means an active unpaid intent for this wallet and Pass
  * already existed and was returned instead of a second one — recovery, built
  * into the contract.
  *
  * `Idempotency-Key` is bound to the customer; reusing one with a different
- * package is a 409 (docs/05 §68).
+ * pass is a 409 (docs/05 §68).
  *
- * A fixed-expiration package stops accepting *new* intents 35 minutes before it
- * expires — `409 PACKAGE_PURCHASE_CUTOFF`. That arithmetic stays on the server:
+ * A fixed-expiration pass stops accepting *new* intents 35 minutes before it
+ * expires — `409 PASS_PURCHASE_CUTOFF`. That arithmetic stays on the server:
  * an intent created before the cutoff remains valid for the rest of its TTL,
  * and the spec is explicit that such an intent is still returned here after the
  * cutoff has passed. Nothing in this client predicts the boundary.
  */
 export function createPurchaseIntent(
-  input: { packageId: string },
+  input: { passId: string },
   options: { idempotencyKey: string; signal?: AbortSignal },
 ): Promise<Purchase> {
   return apiRequest<Purchase>('/api/v1/purchases', {
     method: 'POST',
-    body: { packageId: input.packageId },
+    body: { passId: input.passId },
     idempotencyKey: options.idempotencyKey,
     signal: options.signal,
   })
@@ -92,7 +104,7 @@ export function submitTransaction(
  * (docs/05 §62-§63, §95-§97).
  *
  * Two outcomes are possible once the evidence is finalised, and the spec names
- * both. If the snapshotted package is still usable, one pass is created in an
+ * both. If the snapshotted pass is still usable, one pass is created in an
  * atomic database transaction. If its fixed expiry has passed first, the
  * verified receipt is committed with a `COMPENSATION_REQUIRED` case instead —
  * no pass, and explicitly no second payment request.

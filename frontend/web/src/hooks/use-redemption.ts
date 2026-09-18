@@ -1,15 +1,14 @@
+import { requireBackendNetwork } from '@/api/runtime'
 import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { ApiError, messageForApiError, queryKeys, redemptionsApi } from '@/api'
-import { NimiqOperationError, signMessage } from '@/lib/nimiq'
-import { useRevalidateOnForeground } from '@/hooks/use-foreground'
-import { secondsUntil } from '@/lib/format'
-import type { Pass, RedemptionChallenge } from '@/types/domain'
+import { NimiqOperationError, currentTransport } from '@/lib/nimiq'
+import type { PurchasedPass, RedemptionChallenge } from '@/types/domain'
 import type { CustomerRedemptionState } from '@/types/redemption'
 
 /**
- * The customer half of a redemption.
+ * Using one session from a pass you own.
  *
  * The ceremony, and why each step is where it is:
  *
@@ -17,70 +16,66 @@ import type { CustomerRedemptionState } from '@/types/redemption'
  *              message to sign. Nimpass never composes that text — the nonce,
  *              the domain separation and every binding in it are the server's
  *              (docs/09-SECURITY.md §14, §51-§52).
- *   sign       Nimiq Pay shows its native dialog. We pass the message through
- *              byte-for-byte and forward what comes back unchanged.
- *   authorize  the backend verifies the signature and only then mints the
- *              short-lived NR1 reference. Authorising is not redeeming.
- *   wait       the provider confirms. That is the only call that consumes a
- *              session, and it happens on their device, not this one.
+ *   sign       the wallet shows its confirmation — Nimiq Pay's native dialog
+ *              inside the Mini App, the Nimiq Hub's window in an ordinary
+ *              browser. We pass the message through byte-for-byte and forward
+ *              what comes back unchanged.
+ *   authorize  the backend verifies the signature and consumes exactly one
+ *              session in the same transaction. That response is the redemption.
+ *
+ * There is no fourth step. Nimpass used to mint a short-lived reference here
+ * and wait for a provider to confirm it on their own device; a pass is now used
+ * by the person who owns it, so the signature that proves ownership is also
+ * what spends the session (docs/01-PRODUCT.md §24-§25).
  *
  * What this hook never does is the interesting part. It does not decrement a
- * balance, does not decide a session was used, does not mint or reconstruct a
- * reference, and does not treat a dismissed wallet dialog as a failure.
- * Consumption is one atomic backend transaction, and the only honest thing a
- * customer's device can do is ask what the pass says now
- * (docs/08-ARCHITECTURE.md §49-§50).
+ * balance and does not decide a session was used: the counts in `CONSUMED` are
+ * the ones the backend wrote inside its own transaction, and a dismissed wallet
+ * dialog is not a failure (docs/08-ARCHITECTURE.md §49-§50).
  */
-
-/** How often to re-read while a reference is live, waiting on the provider. */
-const WATCH_INTERVAL_MS = 4_000
 
 export interface SessionRedemption {
   state: CustomerRedemptionState
   /**
-   * Creates a challenge and stops, showing what signing will authorise.
+   * Creates a challenge and stops, showing what signing will do.
    *
    * Deliberately does not open the wallet. A native signature request that
    * appears without warning, moments after a customer bought something with
    * NIM, reads as a second payment — so the explanation comes first and
-   * `proceed` opens the dialog (§7).
+   * `proceed` opens the dialog (§7). It matters more now than it used to:
+   * signing is no longer a step towards using a session, it *is* using one.
    */
   begin: () => Promise<void>
-  /** Opens Nimiq Pay's native dialog for the challenge `begin` created. */
+  /** Opens the wallet's confirmation, then spends the session. */
   proceed: () => Promise<void>
-  /** Re-issues a reference for an already-authorised challenge (§14). */
-  restoreReference: () => Promise<void>
-  /** Closes the sheet. Any live challenge stays server-side. */
+  /** Closes the sheet. Any live challenge stays server-side, unspent. */
   dismiss: () => void
-  /** Looks for an authorised challenge left over from before a reload. */
+  /** Looks for an unsigned challenge left over from before a reload. */
   recover: () => Promise<void>
 }
 
-export function useSessionRedemption(pass: Pass | undefined): SessionRedemption {
+export function useSessionRedemption(pass: PurchasedPass | undefined): SessionRedemption {
   const queryClient = useQueryClient()
   const [state, setState] = useState<CustomerRedemptionState>({ kind: 'IDLE' })
 
   const mounted = useRef(true)
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
-  const abortRef = useRef<AbortController | null>(null)
   const starting = useRef(false)
-
-  const stopWatching = useCallback(() => {
-    if (timer.current) {
-      clearInterval(timer.current)
-      timer.current = null
-    }
-    abortRef.current?.abort()
-    abortRef.current = null
-  }, [])
+  /*
+   * Guards the signing step. A double tap must never become two signatures.
+   *
+   * This is a UX lock and nothing more: a challenge is single-use and the
+   * backend enforces that inside the consuming transaction, refusing the second
+   * authorization rather than spending a second session. Presenting this as the
+   * safety mechanism would be a lie (docs/09-SECURITY.md §41).
+   */
+  const signing = useRef(false)
 
   useEffect(() => {
     mounted.current = true
     return () => {
       mounted.current = false
-      stopWatching()
     }
-  }, [stopWatching])
+  }, [])
 
   const safeSet = useCallback((next: CustomerRedemptionState) => {
     if (mounted.current) setState(next)
@@ -92,66 +87,6 @@ export function useSessionRedemption(pass: Pass | undefined): SessionRedemption 
       void queryClient.invalidateQueries({ queryKey: queryKeys.redemptions.pass(passId) })
     },
     [queryClient],
-  )
-
-  /**
-   * Watches an authorised challenge until the provider resolves it.
-   *
-   * Resolution is read from the challenge itself — `status: CONSUMED`, which is
-   * the backend stating a fact — rather than inferred from a shrinking session
-   * count. Comparing counts would guess, and would credit *this* challenge with
-   * a decrement that a different redemption may have caused (§42).
-   */
-  const watch = useCallback(
-    (challengeId: string, passId: string) => {
-      stopWatching()
-      const controller = new AbortController()
-      abortRef.current = controller
-
-      timer.current = setInterval(() => {
-        if (!mounted.current) return
-
-        // Local countdown, for presentation only. When it reaches zero the UI
-        // stops offering the code, but the backend remains the authority on
-        // whether the challenge is still usable — a client clock must never
-        // make a security decision (§16).
-        setState((current) => {
-          if (current.kind !== 'QR_READY') return current
-          const secondsLeft = secondsUntil(current.challenge.expiresAt)
-          return secondsLeft <= 0 ? { kind: 'EXPIRED' } : { ...current, secondsLeft }
-        })
-
-        void (async () => {
-          try {
-            const latest = await redemptionsApi.getRedemptionChallenge(challengeId, {
-              signal: controller.signal,
-            })
-            if (!mounted.current) return
-
-            if (latest.status === 'CONSUMED') {
-              stopWatching()
-              refreshPass(passId)
-              // Counts come from the challenge's own pass snapshot, which the
-              // backend wrote inside the consuming transaction.
-              safeSet({
-                kind: 'CONSUMED',
-                remainingSessions: latest.pass.remainingSessions,
-                completed: latest.pass.status === 'COMPLETED',
-              })
-              return
-            }
-            if (latest.status === 'EXPIRED' || latest.status === 'CANCELLED') {
-              stopWatching()
-              safeSet({ kind: 'EXPIRED' })
-            }
-          } catch {
-            // A failed poll is not a failed redemption. Keep waiting; the
-            // countdown still governs what the customer is shown.
-          }
-        })()
-      }, WATCH_INTERVAL_MS)
-    },
-    [refreshPass, safeSet, stopWatching],
   )
 
   /** Maps a backend rejection onto the state that explains it. */
@@ -180,71 +115,90 @@ export function useSessionRedemption(pass: Pass | undefined): SessionRedemption 
         default:
           if (error.isUnauthorized) return { kind: 'AUTH_REQUIRED' }
           // An outcome this build does not model is never silent success. It
-          // says so, and offers a fresh attempt rather than a stale code (§9).
+          // says so, and offers a fresh attempt (§9). This matters most here:
+          // a request that failed in an unmodelled way may or may not have
+          // spent a session, and only the pass itself can settle that.
           return { kind: 'UNCERTAIN', message: messageForApiError(error) }
       }
     },
     [],
   )
 
-  /** Shows an authorised challenge's reference, or says it could not be issued. */
-  const presentReference = useCallback(
-    (challenge: RedemptionChallenge, passId: string) => {
-      if (!challenge.redemptionReference) {
-        // Authorised but no reference in this response. Recoverable by
-        // rotating, never by inventing one (§11, §14).
-        safeSet({ kind: 'AUTHORIZED_NO_REFERENCE', challenge })
+  /**
+   * Signs the challenge and spends the session.
+   *
+   * Reached straight from the customer's press, and nothing is awaited before
+   * the wallet call — in an ordinary browser the wallet is the Nimiq Hub, which
+   * opens a window, and browsers only permit that while the click is being
+   * handled (https://nimiq.dev/hub/getting-started). The challenge is already
+   * in hand from `begin`, so there is nothing to fetch first.
+   */
+  const authorize = useCallback(
+    async (challenge: RedemptionChallenge, passId: string, ownerWallet: string) => {
+      const transport = currentTransport()
+      if (!transport) {
+        safeSet({
+          kind: 'UNCERTAIN',
+          message: "We couldn't reach your wallet to use this session.",
+        })
         return
       }
-      safeSet({
-        kind: 'QR_READY',
-        challenge,
-        reference: challenge.redemptionReference,
-        secondsLeft: secondsUntil(challenge.expiresAt),
-      })
-      watch(challenge.challengeId, passId)
-    },
-    [safeSet, watch],
-  )
 
-  /** Authorises a challenge: sign, forward, and show the reference. */
-  const authorize = useCallback(
-    async (challenge: RedemptionChallenge, passId: string) => {
       safeSet({ kind: 'SIGNING', challenge })
 
-      let signed: { publicKey: string; signature: string }
+      let signed
       try {
         // The backend's exact string, untouched. Reconstructing, trimming or
         // prefixing it would sign different bytes than the ones the server will
         // verify — and the server is right to reject that (§5).
-        signed = await signMessage(challenge.message)
+        signed = await transport.signChallenge(
+          requireBackendNetwork().then(() => ({ wallet: ownerWallet, message: challenge.message })),
+        )
       } catch (error) {
         if (error instanceof NimiqOperationError && error.isUserRejection) {
-          // Dismissing the sheet is a normal outcome, not a system failure. No
-          // reference was ever minted, so no provider can redeem anything (§8).
+          // Dismissing the confirmation is a normal outcome, not a system
+          // failure — and nothing was spent, because the signature never
+          // reached the backend (§8).
           safeSet({ kind: 'CANCELLED', challenge })
           return
         }
         safeSet({
           kind: 'UNCERTAIN',
-          message: "We couldn't reach your wallet to authorise this session.",
+          message:
+            error instanceof NimiqOperationError
+              ? error.message
+              : "We couldn't reach your wallet to use this session.",
         })
         return
       }
 
       safeSet({ kind: 'AUTHORIZING', challenge })
       try {
-        // publicKey and signature forwarded exactly as Nimiq Pay returned them.
-        const authorized = await redemptionsApi.authorizeRedemption(challenge.challengeId, {
+        // publicKey and signature forwarded exactly as the wallet produced
+        // them. `signingScheme` travels with them only when the transport
+        // documents its own preprocessing, so the Mini App path stays on the
+        // backend's configured default (see `src/api/redemptions.ts`).
+        const consumed = await redemptionsApi.authorizeRedemption(challenge.challengeId, {
           publicKey: signed.publicKey,
           signature: signed.signature,
+          signingScheme: transport.signingScheme,
         })
-        presentReference(authorized, passId)
+        refreshPass(passId)
+        // Straight from the response. The backend wrote these counts inside the
+        // transaction that spent the session; nothing here subtracts one.
+        safeSet({
+          kind: 'CONSUMED',
+          remainingSessions: consumed.pass.remainingSessions,
+          completed: consumed.pass.status === 'COMPLETED',
+        })
       } catch (error) {
+        // The pass may or may not have moved, so re-read it either way rather
+        // than leaving a stale count on screen behind the error.
+        refreshPass(passId)
         safeSet(fromError(error, challenge))
       }
     },
-    [fromError, presentReference, safeSet],
+    [fromError, refreshPass, safeSet],
   )
 
   const begin = useCallback(async () => {
@@ -254,20 +208,15 @@ export function useSessionRedemption(pass: Pass | undefined): SessionRedemption 
     // constraint would make the race's loser disappear mid-ceremony.
     if (starting.current) return
     starting.current = true
-    stopWatching()
 
     try {
       safeSet({ kind: 'CREATING_CHALLENGE' })
       const challenge = await redemptionsApi.createRedemptionChallenge(pass.id)
-
-      // Already authorised — a leftover from before a reload, rotated to a
-      // fresh reference by the create call itself. No second signature needed.
-      if (challenge.status === 'AUTHORIZED') {
-        presentReference(challenge, pass.id)
-        return
-      }
       if (challenge.status !== 'CREATED') {
-        safeSet({ kind: 'EXPIRED' })
+        // A challenge that is not awaiting a signature has nothing left to
+        // give: it was spent, or it ran out. Start over rather than sign
+        // something the backend will refuse.
+        safeSet({ kind: challenge.status === 'CONSUMED' ? 'ALREADY_CONSUMED' : 'EXPIRED' })
         return
       }
 
@@ -278,55 +227,37 @@ export function useSessionRedemption(pass: Pass | undefined): SessionRedemption 
     } finally {
       starting.current = false
     }
-  }, [fromError, pass, presentReference, safeSet, stopWatching])
+  }, [fromError, pass, safeSet])
 
   /** The second half: open the wallet for the challenge already in hand. */
   const proceed = useCallback(async () => {
     if (!pass) return
     if (state.kind !== 'AWAITING_SIGNATURE') return
-    await authorize(state.challenge, pass.id)
-  }, [authorize, pass, state])
-
-  /**
-   * Re-issues a reference for a challenge that is already authorised.
-   *
-   * Posting to the create endpoint rotates the NR1 reference and returns the
-   * new one, invalidating the previous. It is the contract's own recovery path
-   * and needs no second signature, because the owner already signed this
-   * challenge (§14, §15).
-   */
-  const restoreReference = useCallback(async () => {
-    if (!pass) return
-    if (starting.current) return
-    starting.current = true
+    if (signing.current) return
+    signing.current = true
     try {
-      const rotated = await redemptionsApi.createRedemptionChallenge(pass.id)
-      presentReference(rotated, pass.id)
-    } catch (error) {
-      safeSet(fromError(error, null))
+      // The pass's own owner wallet, so a transport that can pin the signer
+      // does. The backend still derives the real signer from the returned
+      // public key and checks it against the challenge (docs/09-SECURITY.md
+      // §19).
+      await authorize(state.challenge, pass.id, pass.ownerWallet)
     } finally {
-      starting.current = false
+      signing.current = false
     }
-  }, [fromError, pass, presentReference, safeSet])
+  }, [authorize, pass, state])
 
   /**
    * Finds a challenge left behind by a reload, without creating one.
    *
-   * Uses the read-only `current` endpoint, so it never rotates a reference the
-   * customer may still have on another screen. A 404 means there is nothing in
-   * flight, which is the normal case and not an error.
+   * Uses the read-only `current` endpoint. A 404 means there is nothing in
+   * flight, which is the normal case and not an error. Only an unsigned
+   * challenge can be resumed — a signed one has already been spent, and there
+   * is no in-between state left to recover into.
    */
   const recover = useCallback(async () => {
     if (!pass) return
     try {
       const current = await redemptionsApi.getCurrentRedemptionChallenge(pass.id)
-      if (current.status === 'AUTHORIZED') {
-        // Reading a challenge never returns a reference, so there is genuinely
-        // nothing to show yet — offer the rotation rather than a dead QR.
-        safeSet({ kind: 'AUTHORIZED_NO_REFERENCE', challenge: current })
-        watch(current.challengeId, pass.id)
-        return
-      }
       if (current.status === 'CREATED') {
         safeSet({ kind: 'AWAITING_SIGNATURE', challenge: current })
       }
@@ -334,61 +265,11 @@ export function useSessionRedemption(pass: Pass | undefined): SessionRedemption 
       // No active challenge, or unreadable. Either way there is nothing to
       // resume and nothing alarming to report.
     }
-  }, [pass, safeSet, watch])
-
-  /**
-   * Coming back to a live code: re-read it before trusting the countdown.
-   *
-   * A backgrounded WebView stops the watch interval, so the seconds on screen
-   * are whatever they were when the phone locked. The challenge may have
-   * expired, or a provider may have redeemed it while the app was away — both
-   * of which the backend knows and this device does not.
-   */
-  const liveChallengeId =
-    state.kind === 'QR_READY' || state.kind === 'AUTHORIZED_NO_REFERENCE'
-      ? state.challenge.challengeId
-      : null
-
-  useRevalidateOnForeground(
-    useCallback(() => {
-      if (!liveChallengeId || !pass) return
-      void (async () => {
-        try {
-          const latest = await redemptionsApi.getRedemptionChallenge(liveChallengeId)
-          if (latest.status === 'CONSUMED') {
-            stopWatching()
-            refreshPass(pass.id)
-            safeSet({
-              kind: 'CONSUMED',
-              remainingSessions: latest.pass.remainingSessions,
-              completed: latest.pass.status === 'COMPLETED',
-            })
-            return
-          }
-          if (latest.status !== 'AUTHORIZED' && latest.status !== 'CREATED') {
-            stopWatching()
-            safeSet({ kind: 'EXPIRED' })
-            return
-          }
-          // Still live: correct the countdown from the server's own expiry
-          // rather than from a timer that was asleep.
-          setState((current) =>
-            current.kind === 'QR_READY'
-              ? { ...current, secondsLeft: secondsUntil(latest.expiresAt) }
-              : current,
-          )
-        } catch {
-          // Unreachable backend tells us nothing new; the watch keeps trying.
-        }
-      })()
-    }, [liveChallengeId, pass, refreshPass, safeSet, stopWatching]),
-    liveChallengeId !== null,
-  )
+  }, [pass, safeSet])
 
   const dismiss = useCallback(() => {
-    stopWatching()
     safeSet({ kind: 'IDLE' })
-  }, [safeSet, stopWatching])
+  }, [safeSet])
 
-  return { state, begin, proceed, restoreReference, dismiss, recover }
+  return { state, begin, proceed, dismiss, recover }
 }

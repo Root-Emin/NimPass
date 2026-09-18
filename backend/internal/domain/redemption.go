@@ -36,17 +36,17 @@ type RedemptionChallenge struct {
 	ConsumedAt                *time.Time
 }
 
-func NewRedemptionChallenge(id, nonce ID, pass Pass, providerID ID, now time.Time, ttl time.Duration) (RedemptionChallenge, error) {
+func NewRedemptionChallenge(id, nonce ID, pass PurchasedPass, providerID ID, now time.Time, ttl time.Duration) (RedemptionChallenge, error) {
 	return NewBoundRedemptionChallenge(id, nonce, pass, providerID, NimiqTestnet, "test", now, ttl)
 }
 
-func NewBoundRedemptionChallenge(id, nonce ID, pass Pass, providerID ID, network NimiqNetwork, environment string, now time.Time, ttl time.Duration) (RedemptionChallenge, error) {
+func NewBoundRedemptionChallenge(id, nonce ID, pass PurchasedPass, providerID ID, network NimiqNetwork, environment string, now time.Time, ttl time.Duration) (RedemptionChallenge, error) {
 	for _, value := range []ID{id, nonce, providerID} {
 		if _, err := ParseID(string(value)); err != nil {
 			return RedemptionChallenge{}, err
 		}
 	}
-	if ttl <= 0 || ttl > 5*time.Minute || now.IsZero() || pass.Status != PassActive || pass.RemainingSessions <= 0 ||
+	if ttl <= 0 || ttl > 5*time.Minute || now.IsZero() || pass.Status != PurchasedPassActive || pass.RemainingSessions <= 0 ||
 		pass.Snapshot.ProviderID != providerID || pass.OwnerWallet == "" {
 		return RedemptionChallenge{}, errors.New("invalid redemption challenge context")
 	}
@@ -100,7 +100,7 @@ func (r *RedemptionChallenge) Authorize(verifier RedemptionSignatureVerifier, pu
 // Consume and the Pass update must be persisted in one PostgreSQL transaction
 // with row locks and a unique redemption identity. This method only protects
 // one in-memory aggregate and does not claim database concurrency safety.
-func (r *RedemptionChallenge) Consume(pass *Pass, now time.Time) error {
+func (r *RedemptionChallenge) Consume(pass *PurchasedPass, now time.Time) error {
 	if r.Status != RedemptionAuthorized || r.ConsumedAt != nil {
 		return errors.New("redemption challenge is not authorized or was already consumed")
 	}

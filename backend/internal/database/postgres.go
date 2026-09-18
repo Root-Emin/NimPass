@@ -2,7 +2,7 @@ package database
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -11,7 +11,7 @@ import (
 func Open(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse DATABASE_URL: %w", err)
+		return nil, errors.New("invalid DATABASE_URL")
 	}
 	cfg.MaxConns = 10
 	cfg.MinConns = 1
@@ -20,13 +20,13 @@ func Open(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	cfg.HealthCheckPeriod = 30 * time.Second
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("open PostgreSQL pool: %w", err)
+		return nil, errors.New("cannot open PostgreSQL pool")
 	}
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := pool.Ping(pingCtx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("connect to PostgreSQL: %w", err)
+		return nil, errors.New("cannot connect to PostgreSQL")
 	}
 	return pool, nil
 }

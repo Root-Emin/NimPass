@@ -73,8 +73,8 @@ describe('createIdempotencyKey', () => {
 describe('NIM display exactness', () => {
   /**
    * Luna is the smallest unit, so NIM has exactly five decimals (docs/05 §8)
-   * and the package form accepts all of them. Rounding the display meant a
-   * package really priced at 0.00001 NIM rendered as "0 NIM" — a price that is
+   * and the pass form accepts all of them. Rounding the display meant a
+   * pass really priced at 0.00001 NIM rendered as "0 NIM" — a price that is
    * not the price (docs/03-DESIGN-SYSTEM.md §123).
    */
   it('shows every Luna the amount actually contains', () => {
@@ -120,7 +120,7 @@ describe('nimToLuna', () => {
 })
 
 describe('perSessionLuna', () => {
-  it('divides the package price across its sessions', () => {
+  it('divides the pass price across its sessions', () => {
     expect(perSessionLuna(25_000_000, 10)).toBe(2_500_000)
   })
 

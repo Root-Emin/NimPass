@@ -1,49 +1,61 @@
 import { ArrowUpRight } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { ProviderAvatar } from '@/components/provider/provider-avatar'
 import { Card } from '@/components/ui/card'
+import { providerPath } from '@/lib/provider-url'
 import { Skeleton } from '@/components/ui/skeleton'
-import { initialsOf } from '@/lib/format'
 import type { PublicProvider } from '@/types/domain'
 
 /**
  * A provider, as much as the contract lets us show.
  *
- * `PublicProvider` is `{ id, name }`. There is no headline, bio, location,
- * avatar or service count server-side, so the card shows an initials mark and
- * the name. Everything that used to sit here was frontend-only decoration and
- * has been removed rather than filled with placeholders
- * (docs/08-ARCHITECTURE.md §11).
- *
- * Still deliberately absent even when those fields arrive: followers, likes and
- * engagement counters (docs/03-DESIGN-SYSTEM.md §38).
+ * The face is the owner's Nimiq identicon (and a photograph when they uploaded
+ * one). The name is the display name they chose. Followers, likes and
+ * engagement counters stay absent (docs/03-DESIGN-SYSTEM.md §38).
  */
 export function ProviderCard({
   provider,
-  packageCount,
+  passCount,
 }: {
   provider: PublicProvider
-  /** Counted from the published packages already on screen, not guessed. */
-  packageCount?: number
+  /** Counted from the published passes already on screen, not guessed. */
+  passCount?: number
 }) {
   return (
-    <Card className="group transition-shadow duration-[--nimpass-duration-base] hover:shadow-lift">
-      <Link
-        to={`/providers/${provider.id}`}
-        className="flex h-full items-center gap-3.5 p-5"
-      >
-        <Avatar className="size-12">
-          <AvatarFallback>{initialsOf(provider.name)}</AvatarFallback>
-        </Avatar>
+    // `min-w-0`: a grid item's automatic minimum size is its content's
+    // min-content width, and a nowrap `truncate` line has a min-content width
+    // equal to its whole text. A provider with a long name or headline
+    // therefore widened the grid track past the page and scrolled the whole
+    // document sideways. This lets the track be the container's width and lets
+    // the truncation do its job.
+    <Card variant="plain" interactive className="group min-w-0">
+      <Link to={providerPath(provider)} className="flex h-full items-center gap-4 p-5">
+        <ProviderAvatar
+          wallet={provider.wallet}
+          avatarUrl={provider.avatarUrl}
+          variant={provider.avatarVariant}
+          name={provider.name}
+          size={44}
+        />
 
         <div className="min-w-0 flex-1">
           <p className="truncate font-display text-body-lg font-semibold text-ink">
             {provider.name}
           </p>
-          {packageCount !== undefined ? (
+          {provider.headline.trim() ? (
+            <p className="mt-0.5 truncate text-small text-ink-muted">{provider.headline}</p>
+          ) : null}
+          {/*
+            How much this provider has on sale, when the caller was given a
+            count by the backend. It used to be an *alternative* to the
+            headline, shown only to providers who had not written one — which
+            meant the directory's one piece of shopping information was missing
+            from exactly the profiles that were most filled in.
+          */}
+          {passCount !== undefined ? (
             <p className="mt-0.5 text-small text-ink-subtle">
-              {packageCount === 1 ? '1 package' : `${packageCount} packages`}
+              {passCount === 1 ? '1 pass' : `${passCount} passes`}
             </p>
           ) : null}
         </div>
@@ -59,8 +71,8 @@ export function ProviderCard({
 
 export function ProviderCardSkeleton() {
   return (
-    <Card className="flex items-center gap-3.5 p-5">
-      <Skeleton className="size-12 rounded-full" />
+    <Card variant="plain" className="flex items-center gap-4 p-5">
+      <Skeleton className="size-11 rounded-full" />
       <div className="flex-1 space-y-2">
         <Skeleton className="h-4 w-32" />
         <Skeleton className="h-3 w-20" />

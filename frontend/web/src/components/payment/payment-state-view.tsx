@@ -1,4 +1,4 @@
-import { AlertTriangle, CalendarX2, CheckCircle2, HelpCircle, Loader2, ReceiptText, XCircle } from 'lucide-react'
+import { AlertTriangle, CalendarX2, CheckCircle2, HelpCircle, Loader2, ReceiptText, Store, Wallet, XCircle } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 
@@ -50,20 +50,67 @@ const ICON_CLASSES: Record<Tone, string> = {
 }
 
 const FAILURE_COPY: Record<string, string> = {
-  INSUFFICIENT_FUNDS: "This wallet doesn't have enough NIM for this package.",
-  WALLET_UNAVAILABLE: 'Open Nimpass in Nimiq Pay to complete the purchase.',
+  INSUFFICIENT_FUNDS: "This wallet doesn't have enough NIM for this pass.",
+  // Neither transport could be reached. Naming one of them would be a guess,
+  // and telling a desktop visitor to find a phone is the wrong guess.
+  WALLET_UNAVAILABLE: "We couldn't reach a Nimiq wallet to complete the purchase.",
+  POPUP_BLOCKED:
+    'Your browser blocked the Nimiq wallet window. Allow pop-ups for this site, then try again. Nothing was sent.',
+  NO_CONSENSUS: "Your wallet isn't synced with the Nimiq network yet. Nothing was sent.",
   REJECTED_BY_BACKEND: "The payment didn't match this purchase, so no pass was created.",
   PAYMENT_CONFLICT:
     "We couldn't match this payment to this purchase, so no pass was created. Don't send another one — we'll look into it.",
   INTENT_EXPIRED: 'This purchase expired before the payment arrived. Start again to get a fresh one.',
   NETWORK_BEFORE_SUBMIT: "We couldn't reach the network. Nothing was sent.",
-  WALLET_BUSY: 'Another Nimiq Pay request is still open. Finish it, then try again.',
+  WALLET_BUSY: 'Another wallet request is still open. Finish it, then try again.',
   UNKNOWN: "Payment couldn't be completed. Your pass was not created.",
+}
+
+/**
+ * The two things a customer can do while nothing has been sent: try the payment
+ * again, or let the intent go.
+ *
+ * They travel together because they mean the same thing about the world — no
+ * money has moved — and each is rendered only when the flow says it is safe.
+ * Nothing here decides that: the flow computes both, from the same rule.
+ */
+function UnpaidActions({
+  retry,
+  retryLabel,
+  cancel,
+  cancelling,
+}: {
+  retry?: () => void
+  retryLabel: string
+  cancel?: () => void
+  cancelling?: boolean
+}) {
+  if (!retry && !cancel) return null
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {retry ? (
+        <Button size="sm" variant="secondary" onClick={retry}>
+          {retryLabel}
+        </Button>
+      ) : null}
+      {cancel ? (
+        <Button size="sm" variant="ghost" onClick={cancel} loading={cancelling} disabled={cancelling}>
+          {cancelling ? 'Cancelling…' : "I don't want this anymore"}
+        </Button>
+      ) : null}
+    </div>
+  )
 }
 
 function describePaymentState(
   state: PaymentState,
-  handlers: { onRetry?: () => void; onReconcile?: () => void; reconciling?: boolean } = {},
+  handlers: {
+    onRetry?: () => void
+    onReconcile?: () => void
+    reconciling?: boolean
+    onCancel?: () => void
+    cancelling?: boolean
+  } = {},
 ): Presentation | null {
   const spinner = <Loader2 className="animate-spin" aria-hidden="true" />
 
@@ -80,6 +127,16 @@ function describePaymentState(
         icon: <CheckCircle2 aria-hidden="true" />,
         title: 'Ready to pay',
         body: 'Confirm the payment in Nimiq Pay to get your pass.',
+        // No expiry is rendered here on purpose: the intent's deadline and the
+        // pass cutoff are the backend's arithmetic, and a countdown on this
+        // side would be a second implementation of a money rule (§8).
+        action: (
+          <UnpaidActions
+            retryLabel="Try again"
+            cancel={handlers.onCancel}
+            cancelling={handlers.cancelling}
+          />
+        ),
       }
 
     case 'AWAITING_WALLET':
@@ -114,6 +171,11 @@ function describePaymentState(
      * permanent. The copy says what is actually happening — received, being
      * finalised — rather than implying doubt, and the only control offered is a
      * re-check, never a payment.
+     *
+     * Only reachable under `NIMIQ_CONFIRMATION_POLICY=finality`. The default
+     * policy issues the pass on canonical inclusion and goes straight from
+     * VERIFYING to CONFIRMED, so no customer sits here for a macro block
+     * (ADR-021).
      */
     case 'PENDING':
       return {
@@ -145,45 +207,132 @@ function describePaymentState(
         reassurance: 'You do not need to pay again.',
       }
 
+    /*
+     * The quiet, permanent version of the good news.
+     *
+     * The loud version is the success dialog, which opens once when the
+     * backend reports COMPLETE and is then remembered as shown. This panel is
+     * what remains afterwards and on every later visit — so it states the
+     * outcome rather than re-announcing it, and its wording is deliberately
+     * different from the dialog's so the screen never says the same sentence
+     * twice.
+     */
     case 'COMPLETE':
       return {
         tone: 'success',
         icon: <CheckCircle2 aria-hidden="true" />,
-        title: 'Payment successful',
-        body: 'Your pass is ready.',
+        title: 'Pass added to My Passes',
+        body: 'Your payment was verified on the Nimiq blockchain and this pass is yours.',
         action: (
           <Button asChild size="sm">
-            <Link to={`/passes/${state.passId}`}>View pass</Link>
+            <Link to={`/passes/${state.passId}`}>Open your pass</Link>
           </Button>
         ),
       }
 
     /*
-     * The one state where the payment worked and the pass did not exist.
+     * Two different outcomes arrive here, and they owe the customer opposite
+     * advice, so they must not share copy.
      *
-     * Everything here is constrained by what the backend actually guarantees.
-     * It says the payment was verified and finalised, that no pass was issued,
-     * that the customer must not pay again, and — explicitly — that no
-     * automated refund exists. So the copy says those four things and stops.
-     * "Refund on its way", "funds returned" and "we'll process this
-     * automatically" would all be inventions (§4, §7 of this milestone).
+     * The original is a verified payment with no pass: the NIM arrived, sits
+     * with the provider, and paying again would be money lost. Everything that
+     * branch says is constrained by what the backend actually guarantees — the
+     * payment was verified, no pass was issued, do not pay again, and no
+     * automated refund exists. "Refund on its way" and "we'll process this
+     * automatically" would be inventions (§4, §7 of this milestone).
+     *
+     * The second is a reversed settlement: a pass issued on an inclusion that
+     * never became canonical, so no NIM ever left the wallet (ADR-021). Telling
+     * that customer their payment arrived and not to pay again would leave them
+     * with neither a pass nor a way to get one.
+     *
+     * `doNotPayAgain` is the backend's own distinction between them, so it is
+     * what this branches on rather than a guess from the reason string. A
+     * missing flag reads as `true` (`types/payment.ts`), which keeps the
+     * cautious wording the default.
      *
      * The raw `COMPENSATION_REQUIRED` enum never reaches the screen (§5).
      */
     case 'COMPENSATION_REQUIRED':
+      return state.compensation?.doNotPayAgain === false
+        ? {
+            tone: 'warning',
+            icon: <ReceiptText aria-hidden="true" />,
+            title: 'This payment did not go through',
+            body:
+              'Your transaction did not stay on the Nimiq blockchain, so it was never completed and nothing was charged. The pass it created has been removed from your account.',
+            reassurance: "You were not charged. You can buy this pass again when you're ready.",
+            detail: state.purchase.transactionHash
+              ? `Reference ${shortHash(state.purchase.transactionHash)}`
+              : undefined,
+            action: (
+              <Button asChild size="sm" variant="secondary">
+                <Link to={`/pass/${state.purchase.passId}`}>Back to the pass</Link>
+              </Button>
+            ),
+          }
+        : {
+            tone: 'warning',
+            icon: <ReceiptText aria-hidden="true" />,
+            title: 'Payment received, but your pass could not be issued',
+            body:
+              'Your payment arrived and we have a record of it. This pass reached its end date before the pass could be created, so there is no pass on your account.',
+            reassurance:
+              "Do not pay again. We've logged this for review, and you'll be contacted about putting it right.",
+            // A verified receipt is the one durable thing the customer holds
+            // here, so the detail that identifies it is worth showing.
+            detail: state.purchase.transactionHash
+              ? `Reference ${shortHash(state.purchase.transactionHash)}`
+              : undefined,
+            action: (
+              <Button asChild size="sm" variant="secondary">
+                <Link to="/passes">Go to My Passes</Link>
+              </Button>
+            ),
+          }
+
+    /*
+     * Refused before any money moved: the pass is too close to its fixed
+     * expiration for a purchase to settle safely.
+     *
+     * The 35-minute cutoff is the backend's arithmetic and stays there. This
+     * branch only reports the decision it was given (§8).
+     */
+    /**
+     * This account created the pass. Not a payment problem — there was never
+     * going to be a payment — so the copy says what is true and points at the
+     * thing they can actually do with their own pass.
+     */
+    case 'SELF_PURCHASE':
       return {
-        tone: 'warning',
-        icon: <ReceiptText aria-hidden="true" />,
-        title: 'Payment received, but your pass could not be issued',
+        tone: 'neutral',
+        icon: <Store aria-hidden="true" />,
+        title: 'This is your pass',
+        body: 'You created this pass, so you cannot buy it yourself. Share the link with a customer instead.',
+        reassurance: 'You have not been charged.',
+        action: (
+          <Button asChild size="sm" variant="secondary">
+            <Link to="/my-store">Open My Store</Link>
+          </Button>
+        ),
+      }
+
+    /**
+     * They already have one of these, and it still has sessions on it.
+     *
+     * Not a payment problem either, and not something to retry — so the copy
+     * says what they hold rather than what went wrong, and the action opens
+     * the pass instead of a second checkout. `Buy Again` is what happens after
+     * that pass is finished (docs/01-PRODUCT.md §56).
+     */
+    case 'ALREADY_OWNED':
+      return {
+        tone: 'neutral',
+        icon: <Wallet aria-hidden="true" />,
+        title: 'You already have this pass',
         body:
-          'Your payment arrived and we have a record of it. This package reached its end date before the pass could be created, so there is no pass on your account.',
-        reassurance:
-          "Do not pay again. We've logged this for review, and you'll be contacted about putting it right.",
-        // A verified receipt is the one durable thing the customer holds here,
-        // so the detail that identifies it is worth showing.
-        detail: state.purchase.transactionHash
-          ? `Reference ${shortHash(state.purchase.transactionHash)}`
-          : undefined,
+          'You still have sessions left on the pass you bought. Use those first — you can buy this pass again once it is finished.',
+        reassurance: 'You have not been charged.',
         action: (
           <Button asChild size="sm" variant="secondary">
             <Link to="/passes">Go to My Passes</Link>
@@ -191,24 +340,40 @@ function describePaymentState(
         ),
       }
 
-    /*
-     * Refused before any money moved: the package is too close to its fixed
-     * expiration for a purchase to settle safely.
+    /**
+     * Their previous attempt at this pass has not finished settling.
      *
-     * The 35-minute cutoff is the backend's arithmetic and stays there. This
-     * branch only reports the decision it was given (§8).
+     * The only refusal on this screen that does *not* say "you have not been
+     * charged", because it cannot: the attempt this is protecting may well
+     * have been paid, and that is the whole reason a second one is refused.
+     * The copy asks them to wait and says explicitly not to pay again (§55).
      */
+    case 'PURCHASE_IN_SETTLEMENT':
+      return {
+        tone: 'neutral',
+        icon: <Loader2 aria-hidden="true" />,
+        title: 'Still checking your last payment',
+        body:
+          "You started a payment for this pass a moment ago and we're still looking for it on the network. If you paid, your pass will appear on its own.",
+        reassurance: 'Do not pay again. Check My Passes in a few minutes.',
+        action: (
+          <Button asChild size="sm" variant="secondary">
+            <Link to="/passes">Go to My Passes</Link>
+          </Button>
+        ),
+      }
+
     case 'PURCHASE_CUTOFF':
       return {
         tone: 'neutral',
         icon: <CalendarX2 aria-hidden="true" />,
-        title: 'Too late to buy this package',
+        title: 'Too late to buy this pass',
         body:
-          "This package is too close to its end date to buy safely — there wouldn't be enough time to confirm the payment before it expires.",
+          "This pass is too close to its end date to buy safely — there wouldn't be enough time to confirm the payment before it expires.",
         reassurance: 'You have not been charged.',
         action: (
           <Button asChild size="sm" variant="secondary">
-            <Link to="/discover">Find another package</Link>
+            <Link to="/discover">Find another pass</Link>
           </Button>
         ),
       }
@@ -219,11 +384,14 @@ function describePaymentState(
         icon: <XCircle aria-hidden="true" />,
         title: 'Payment cancelled',
         body: 'You were not charged.',
-        action: handlers.onRetry ? (
-          <Button size="sm" variant="secondary" onClick={handlers.onRetry}>
-            Try again
-          </Button>
-        ) : undefined,
+        action: (
+          <UnpaidActions
+            retry={handlers.onRetry}
+            retryLabel="Try again"
+            cancel={handlers.onCancel}
+            cancelling={handlers.cancelling}
+          />
+        ),
       }
 
     case 'FAILED':
@@ -271,6 +439,8 @@ export function PaymentStateView({
   onRetry,
   onReconcile,
   reconciling,
+  onCancel,
+  cancelling,
   className,
 }: {
   state: PaymentState
@@ -278,11 +448,20 @@ export function PaymentStateView({
   /** Asks the backend to re-check. Never starts a payment. */
   onReconcile?: () => void
   reconciling?: boolean
+  /** Abandons an unpaid intent. Never offered once anything may have been sent. */
+  onCancel?: () => void
+  cancelling?: boolean
   className?: string
 }) {
   // A retry may only be offered where a second payment is safe (§55).
   const retry = onRetry && mayRetryPayment(state) ? onRetry : undefined
-  const presentation = describePaymentState(state, { onRetry: retry, onReconcile, reconciling })
+  const presentation = describePaymentState(state, {
+    onRetry: retry,
+    onReconcile,
+    reconciling,
+    onCancel,
+    cancelling,
+  })
   if (!presentation) return null
 
   const critical = CRITICAL_KINDS.has(state.kind)
@@ -294,7 +473,12 @@ export function PaymentStateView({
       // focus — which would yank the user out of whatever they were reading.
       role={critical ? 'alert' : 'status'}
       aria-live={critical ? 'assertive' : 'polite'}
-      className={cn('flex gap-3 rounded-md border p-4', TONE_CLASSES[presentation.tone], className)}
+      className={cn(
+        'flex gap-3 rounded-xl border p-4',
+        'transition-colors duration-[--nimpass-duration-base]',
+        TONE_CLASSES[presentation.tone],
+        className,
+      )}
     >
       <span
         className={cn('mt-0.5 shrink-0 [&_svg]:size-4', ICON_CLASSES[presentation.tone])}
@@ -305,7 +489,13 @@ export function PaymentStateView({
       >
         {presentation.icon}
       </span>
-      <div className="min-w-0 space-y-1.5">
+      {/*
+        Keyed on the state so each new message fades in rather than swapping
+        mid-sentence. The live region itself is the element *above* this one and
+        is never replaced — a screen reader has to be watching a region that
+        already exists for a change inside it to be announced.
+      */}
+      <div key={state.kind} className="animate-fade-in min-w-0 space-y-1.5">
         <p className="font-medium text-ink">{presentation.title}</p>
         <p className="text-body text-ink-muted">{presentation.body}</p>
         {presentation.reassurance ? (

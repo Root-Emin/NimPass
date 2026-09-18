@@ -1,7 +1,8 @@
-import { useQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 
-import { passesApi, queryKeys, redemptionsApi } from '@/api'
-import { useMyPurchases } from '@/hooks/use-purchases'
+import { passesApi, queryKeys } from '@/api'
+import { useSession } from '@/hooks/use-session'
+import type { PurchasedPass, PurchasedPassStatusFilter } from '@/types/domain'
 
 /**
  * Pass queries.
@@ -12,54 +13,79 @@ import { useMyPurchases } from '@/hooks/use-purchases'
  */
 
 /**
- * The passes this customer owns.
+ * The passes this customer owns (`GET /passes`).
  *
- * There is no `GET /me/passes` in the contract, so the list is assembled from
- * the purchases that produced the passes: `GET /purchases` returns up to 100
- * of the customer's own purchases, each carrying the `passId` it created.
+ * Ownership, ordering and expiry are all the backend's: the request carries no
+ * wallet, the page arrives newest-first, and a pass that expired is already
+ * reported as EXPIRED rather than being aged on this side.
  *
- * This is a real limitation, not a workaround to forget about. A customer with
- * more than 100 purchases would not see their oldest passes, and the ordering
- * is the purchase's, not the pass's. A pass list endpoint should replace this.
+ * Paged with the contract's opaque cursor. The status filter is fixed for the
+ * whole walk because the spec requires it — the cursor and the filter are one
+ * pair, and mixing them mid-walk is undefined. `hasMore` is `nextCursor !== null`
+ * and nothing else: a short page is not the end of the collection.
  */
-export function useMyPasses() {
-  // Shares the cached purchase list with the purchase-status surface rather
-  // than fetching `/purchases` twice for one screen.
-  const purchases = useMyPurchases()
-  const passIds = (purchases.data ?? [])
-    .map((purchase) => purchase.passId)
-    .filter((id): id is string => id !== null)
+export interface MyPasses {
+  data: PurchasedPass[] | undefined
+  isPending: boolean
+  isError: boolean
+  error: unknown
+  hasMore: boolean
+  isLoadingMore: boolean
+  loadMore: () => void
+  refetch: () => void
+}
 
-  const passes = useQuery({
-    queryKey: [...queryKeys.passes.mine(), passIds],
-    queryFn: async ({ signal }) => {
-      // Fetched individually because that is the only pass endpoint there is.
-      // `allSettled`: one unreadable pass must not blank the whole collection.
-      // A pass that 404s or 403s is dropped rather than rendered as an error —
-      // ownership is the backend's answer, and the honest response to "not
-      // yours" is to show what is (docs/09-SECURITY.md §32, §36).
-      const results = await Promise.allSettled(passIds.map((id) => passesApi.getPass(id, signal)))
-      return results
-        .filter((result) => result.status === 'fulfilled')
-        .map((result) => result.value)
-    },
-    // Nothing to resolve until the purchase list has arrived.
-    enabled: purchases.isSuccess,
+/** One page's worth. The contract's maximum is 100. */
+const PASS_PAGE_SIZE = 20
+
+export function useMyPasses(status: PurchasedPassStatusFilter = ''): MyPasses {
+  const { session } = useSession()
+
+  const query = useInfiniteQuery({
+    queryKey: queryKeys.passes.mine(status),
+    queryFn: ({ pageParam, signal }) =>
+      passesApi.listPasses({ limit: PASS_PAGE_SIZE, status, cursor: pageParam }, signal),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
+    // Passes are private. Without a session there is nobody to list them for,
+    // and asking would be a guaranteed 401 (docs/09-SECURITY.md §32).
+    enabled: Boolean(session),
   })
 
-  // The purchase list is the first hop, so its pending and error states are
-  // this hook's too — otherwise a failed `/purchases` would render as an empty
-  // pass collection, which reads as "you own nothing".
   return {
-    data: passes.data,
-    isPending: purchases.isPending || (purchases.isSuccess && passes.isPending),
-    isError: purchases.isError || passes.isError,
-    error: purchases.error ?? passes.error,
+    data: query.data?.pages.flatMap((page) => page.items),
+    isPending: query.isPending,
+    isError: query.isError,
+    error: query.error,
+    hasMore: query.hasNextPage,
+    isLoadingMore: query.isFetchingNextPage,
+    loadMore: () => {
+      if (query.hasNextPage && !query.isFetchingNextPage) void query.fetchNextPage()
+    },
     refetch: () => {
-      void purchases.refetch()
-      return passes.refetch()
+      void query.refetch()
     },
   }
+}
+
+/**
+ * The live pass this customer already holds for one catalogue Pass, if any.
+ *
+ * Presentation only, like `isOwnListing`. The rule is
+ * `POST /api/v1/purchases` answering 409 PASS_ALREADY_OWNED, decided against
+ * `purchased_passes` under a lock; what this buys is that the customer sees the
+ * pass they already have instead of a Buy button that cannot work.
+ *
+ * It reads the first page of their ACTIVE passes and nothing more — the list
+ * endpoint has no filter by catalogue Pass, and walking every page to grey out
+ * a button would be a request storm for a cosmetic answer. A customer holding
+ * more ACTIVE passes than one page therefore still sees the button and is
+ * answered by the backend, which is the same outcome the answer always had.
+ */
+export function useHeldPass(passId: string | undefined): PurchasedPass | undefined {
+  const { data } = useMyPasses('ACTIVE')
+  if (!passId) return undefined
+  return data?.find((pass) => pass.passId === passId && pass.remainingSessions > 0)
 }
 
 export function usePass(id: string | undefined) {
@@ -67,22 +93,5 @@ export function usePass(id: string | undefined) {
     queryKey: queryKeys.passes.detail(id ?? ''),
     queryFn: ({ signal }) => passesApi.getPass(id as string, signal),
     enabled: Boolean(id),
-  })
-}
-
-/**
- * One pass's consumed-session history (`GET /passes/{passID}/redemptions`).
- *
- * Only consumed rows exist — a challenge that expired or was never authorised
- * leaves no trace here, which is correct: nothing happened. `sessionOrdinal` is
- * the backend's 1-based position in the pass's sequence, so the list never
- * needs to be counted or renumbered on this side.
- */
-export function usePassRedemptions(passId: string | undefined) {
-  return useQuery({
-    queryKey: queryKeys.redemptions.pass(passId ?? ''),
-    queryFn: ({ signal }) => redemptionsApi.listPassRedemptions(passId as string, { signal }),
-    enabled: Boolean(passId),
-    select: (response) => response.items,
   })
 }

@@ -73,12 +73,11 @@ export class ApiError extends Error {
  */
 const DOMAIN_ERROR_COPY: Record<string, string> = {
   /* Codes docs/08-ARCHITECTURE.md §66 defines for the domain. */
-  PACKAGE_NOT_FOUND: "This package doesn't exist or was removed.",
-  PACKAGE_UNAVAILABLE: 'This package is no longer available for purchase.',
+  PASS_NOT_FOUND: "This pass doesn't exist or was removed.",
+  PASS_UNAVAILABLE: 'This pass is no longer available for purchase.',
   PROVIDER_NOT_FOUND: "This provider page doesn't exist.",
   PURCHASE_NOT_FOUND: "We couldn't find this purchase.",
   PAYMENT_NOT_CONFIRMED: 'This payment has not been confirmed yet.',
-  PASS_NOT_FOUND: "We couldn't find this pass.",
   PASS_NOT_OWNED: 'This pass belongs to a different wallet.',
   PASS_COMPLETED: 'This pass has no sessions remaining.',
   PASS_EXPIRED: 'This pass has expired.',
@@ -97,9 +96,9 @@ const DOMAIN_ERROR_COPY: Record<string, string> = {
    * wrong": an expired sign-in, a permission problem and a rate limit need
    * different responses from the user.
    */
-  AUTH_REQUIRED: 'Your session has ended. Sign in again to continue.',
-  CSRF_INVALID: 'Your session has ended. Sign in again to continue.',
-  ORIGIN_FORBIDDEN: 'Your session has ended. Sign in again to continue.',
+  AUTH_REQUIRED: 'Your session has ended. Log in again to continue.',
+  CSRF_INVALID: 'Your session has ended. Log in again to continue.',
+  ORIGIN_FORBIDDEN: 'Your session has ended. Log in again to continue.',
   FORBIDDEN: "You don't have access to this.",
   CHALLENGE_EXPIRED: 'That request expired. Try again.',
   CHALLENGE_CONSUMED: 'That request was already used. Try again.',
@@ -118,13 +117,13 @@ const DOMAIN_ERROR_COPY: Record<string, string> = {
   INTENT_EXPIRED:
     'This purchase expired before the payment arrived. If you already sent NIM, do not send it again — open the purchase and we will keep checking.',
   /*
-   * The backend refuses a new purchase once a fixed-expiration package is too
+   * The backend refuses a new purchase once a fixed-expiration pass is too
    * close to its end date to settle safely. Nobody has been charged, so this is
    * not phrased as a payment problem — and it is not phrased as "try again"
    * either, because the same request would be refused for the same reason.
    */
-  PACKAGE_PURCHASE_CUTOFF:
-    "This package is too close to its end date to buy safely, so we didn't start a payment. Have a look at the other packages from this provider.",
+  PASS_PURCHASE_CUTOFF:
+    "This pass is too close to its end date to buy safely, so we didn't start a payment. Have a look at the other passes from this provider.",
   /*
    * Redemption codes (Mission 04.1).
    *

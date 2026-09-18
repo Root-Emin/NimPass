@@ -18,7 +18,7 @@ type Redemption struct {
 	ConsumedAt     time.Time
 }
 
-func NewRedemption(id ID, challenge RedemptionChallenge, pass Pass) (Redemption, error) {
+func NewRedemption(id ID, challenge RedemptionChallenge, pass PurchasedPass) (Redemption, error) {
 	if _, err := ParseID(string(id)); err != nil {
 		return Redemption{}, err
 	}

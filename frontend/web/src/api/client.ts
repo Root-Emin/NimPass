@@ -50,6 +50,19 @@ export function getApiBaseUrl(): string {
 export interface RequestOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'
   body?: unknown
+  /**
+   * Query parameters, encoded here rather than spliced into the path.
+   *
+   * Two reasons, and the second is the load-bearing one: values are escaped in
+   * one place, and the path each module passes stays a literal that can be
+   * compared against `backend/openapi.yaml` (see `openapi-drift.test.ts`). A
+   * path built by string concatenation is invisible to that check.
+   *
+   * Undefined and empty values are dropped — an omitted parameter and an empty
+   * one mean different things in this contract, and only the caller knows
+   * which it means.
+   */
+  query?: Record<string, string | number | undefined>
   signal?: AbortSignal
   /**
    * Sent as `Idempotency-Key`. Required for any request that can create money
@@ -60,7 +73,9 @@ export interface RequestOptions {
 }
 
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, signal, idempotencyKey, headers = {} } = options
+  const { method = 'GET', body, query, signal, idempotencyKey, headers = {} } = options
+  const search = toSearch(query)
+  const requestPath = search ? `${path}?${search}` : path
 
   // Development-only: serve the public catalogue from presentation fixtures so
   // the marketplace surfaces can be designed before the backend exists. Guarded
@@ -68,7 +83,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   // are removed from production builds. See src/dev/README.md.
   if (import.meta.env.DEV && fixturesEnabled()) {
     const { serveFromFixtures } = await import('@/dev/fixture-transport')
-    const result = await serveFromFixtures(path, method)
+    const result = await serveFromFixtures(requestPath, method)
     if (result.handled) return result.data as T
   }
 
@@ -76,16 +91,17 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     Accept: 'application/json',
     ...headers,
   }
-  if (body !== undefined) requestHeaders['Content-Type'] = 'application/json'
+  const isFormData = typeof FormData !== 'undefined' && body instanceof FormData
+  if (body !== undefined && !isFormData) requestHeaders['Content-Type'] = 'application/json'
   if (idempotencyKey) requestHeaders['Idempotency-Key'] = idempotencyKey
   if (csrfToken && method !== 'GET') requestHeaders[CSRF_HEADER] = csrfToken
 
   let response: Response
   try {
-    response = await fetch(`${getApiBaseUrl()}${path}`, {
+    response = await fetch(`${getApiBaseUrl()}${requestPath}`, {
       method,
       headers: requestHeaders,
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : isFormData ? (body as FormData) : JSON.stringify(body),
       signal,
       // Wallet sessions are expected to travel as an httpOnly cookie rather
       // than a token in JS-reachable storage (docs/09-SECURITY.md §62).
@@ -120,6 +136,16 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   }
 
   return payload as T
+}
+
+function toSearch(query: RequestOptions['query']): string {
+  if (!query) return ''
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(query)) {
+    if (value === undefined || value === '') continue
+    params.set(key, String(value))
+  }
+  return params.toString()
 }
 
 async function readJson(response: Response): Promise<unknown> {

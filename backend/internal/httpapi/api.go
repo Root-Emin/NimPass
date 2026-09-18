@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -21,12 +22,17 @@ import (
 )
 
 type handler struct {
-	auth        application.Auth
-	catalog     application.Catalog
-	payments    application.Payments
-	redemptions application.Redemptions
-	cfg         config.Config
-	limits      *limiter
+	auth         application.Auth
+	catalog      application.Catalog
+	payments     application.Payments
+	redemptions  application.Redemptions
+	passSessions application.PassSessions
+	media        application.Media
+	cfg          config.Config
+	limits       *limiter
+	sharedLimits interface {
+		Allow(context.Context, string, int, time.Duration) bool
+	}
 }
 
 type sessionKey struct{}
@@ -107,7 +113,13 @@ func (h *handler) requireSession(next http.Handler) http.Handler {
 		}
 		s, err := h.auth.Authenticate(r.Context(), cookie.Value)
 		if err != nil {
-			apiFailure(w, r, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication required")
+			if errors.Is(err, application.ErrForbidden) {
+				apiFailure(w, r, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication required")
+			} else {
+				// A transient database failure does not invalidate the session.
+				// Keep it retryable instead of prompting the client to log out.
+				mappedError(w, r, err)
+			}
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -131,7 +143,8 @@ func sessionFrom(r *http.Request) application.Session {
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
 		apiFailure(w, r, http.StatusUnsupportedMediaType, "CONTENT_TYPE", "JSON required")
 		return false
 	}
@@ -175,9 +188,9 @@ func mappedError(w http.ResponseWriter, r *http.Request, err error) {
 		apiFailure(w, r, 404, "PASS_NOT_FOUND", "Pass not found")
 	case errors.Is(err, application.ErrPassNotOwned):
 		apiFailure(w, r, 403, "PASS_NOT_OWNED", "Pass is not owned by this wallet")
-	case errors.Is(err, application.ErrPassExpired):
+	case errors.Is(err, application.ErrPurchasedPassExpired):
 		apiFailure(w, r, 410, "PASS_EXPIRED", "Pass expired")
-	case errors.Is(err, application.ErrPassCompleted):
+	case errors.Is(err, application.ErrPurchasedPassCompleted):
 		apiFailure(w, r, 409, "PASS_COMPLETED", "Pass is completed")
 	case errors.Is(err, application.ErrRedemptionChallengeExpired):
 		apiFailure(w, r, 410, "REDEMPTION_CHALLENGE_EXPIRED", "Redemption challenge expired")
@@ -189,8 +202,6 @@ func mappedError(w http.ResponseWriter, r *http.Request, err error) {
 		apiFailure(w, r, 401, "INVALID_REDEMPTION_SIGNATURE", "Redemption signature invalid")
 	case errors.Is(err, application.ErrStaleRedemptionChallenge):
 		apiFailure(w, r, 409, "STALE_REDEMPTION_CHALLENGE", "Redemption challenge is stale")
-	case errors.Is(err, application.ErrInvalidRedemptionToken):
-		apiFailure(w, r, 404, "INVALID_REDEMPTION_TOKEN", "Invalid redemption reference")
 	case errors.Is(err, application.ErrTooManyAttempts):
 		apiFailure(w, r, 429, "RATE_LIMITED", "Too many attempts")
 	default:
@@ -281,4 +292,12 @@ func (l *limiter) Allow(key string, max int, window time.Duration) bool {
 	entry.Count++
 	l.entries[key] = entry
 	return true
+}
+
+func (h *handler) allow(r *http.Request, key string, max int, window time.Duration) bool {
+	if h.sharedLimits != nil {
+		return h.sharedLimits.Allow(r.Context(), key, max, window)
+	}
+	// Only unit-test handlers without a database use the in-memory limiter.
+	return h.limits.Allow(key, max, window)
 }
