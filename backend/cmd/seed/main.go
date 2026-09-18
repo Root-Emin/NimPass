@@ -203,11 +203,21 @@ func run() error {
 /*
 A data-writing tool pointed at the wrong database is the kind of mistake that
 is only obvious afterwards, so the guard is a refusal rather than a warning:
-this runs against a local host, and never with APP_ENV=production.
+this runs against a local host, never with APP_ENV=production, and never with
+NIMIQ_NETWORK=MAINNET.
 */
 func refuseNonLocal(dsn string) error {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
 		return errors.New("refusing to seed with APP_ENV=production")
+	}
+	// Every row this command writes is labelled TESTNET, because that is what
+	// it is: demo providers whose addresses nobody holds a key for, and
+	// purchases with no transaction behind them. Writing them into a database a
+	// Mainnet server will later bind to would poison it — `BindDeployment`
+	// refuses to boot against rows from another network, so the seed would not
+	// corrupt a Mainnet deployment so much as permanently block one.
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("NIMIQ_NETWORK")), "MAINNET") {
+		return errors.New("refusing to seed with NIMIQ_NETWORK=MAINNET; the seed writes TESTNET rows only")
 	}
 	parsed, err := url.Parse(dsn)
 	if err != nil {

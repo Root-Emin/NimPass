@@ -94,9 +94,12 @@ func TestLiveInspectProbe(t *testing.T) {
 //
 // This is the one configuration mistake that could settle a purchase against
 // the wrong chain, and it is easy to make: rpc.nimiqwatch.com is the endpoint
-// the official raw-RPC docs use in their examples, it is Mainnet, and it has
-// no Testnet counterpart — so a developer following the docs while running a
-// Testnet deployment has already made it.
+// the official raw-RPC docs use in their examples and it is Mainnet, so a
+// developer following the docs while running a Testnet deployment has already
+// made it. Its Testnet sibling is a *different host* —
+// rpc.testnet.nimiqwatch.com, verified serving TestAlbatross on 2026-09-18 —
+// which is one subdomain away from the Mainnet one and correspondingly easy to
+// get wrong in either direction.
 //
 // `getNetworkId` is not available to catch it with; that gateway keeps the
 // method outside its allowlist. The fallback reads the network off a block,

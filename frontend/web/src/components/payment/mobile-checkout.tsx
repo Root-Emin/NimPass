@@ -2,6 +2,7 @@ import { Wallet } from 'lucide-react'
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { networkHint } from '@/components/payment/network-hint'
 import { PaymentTerms } from '@/components/payment/payment-terms'
 import type { PurchaseFlow } from '@/hooks/use-purchase-flow'
 import { currentTransport } from '@/lib/nimiq'
@@ -174,7 +175,7 @@ export function NativeCheckout({
       </label>
       <p className="text-micro text-ink-subtle">
         Nimiq Pay controls the selected network. Its Mini App API does not expose a network
-        switch or check. For Testnet, long-press Settings for 10 seconds and choose Testnet.
+        switch or check. {networkHint(request.network)}
       </p>
 
       {/*

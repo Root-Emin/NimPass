@@ -1,5 +1,13 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "build": {
+    "env": {
+      "VITE_APP_ENV": "production",
+      "VITE_NIMIQ_NETWORK": "MAINNET",
+      "VITE_DEV_FIXTURES": "0",
+      "VITE_API_BASE_URL": "/"
+    }
+  },
   "rewrites": [
     { "source": "/api/:path*", "destination": "https://nimpass-backend.onrender.com/api/:path*" },
     { "source": "/(.*)", "destination": "/index.html" }

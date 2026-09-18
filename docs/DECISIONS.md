@@ -2217,3 +2217,112 @@ A provider's ability to spend a customer's sessions unilaterally was examined
 in the same audit and deliberately **not** changed: ADR-012 decided it, and
 customer approval or a dispute route is a separate product decision. The risk
 and the exact audit trail behind it are written down in `09-SECURITY.md §41a`.
+
+## ADR-028 — Production is Mainnet, and the chain says so, not the configuration
+
+**Date:** 2026-09-18
+**Status:** Accepted
+**Refines:** ADR-021 (the settlement policy, whose timings are now stated for
+Mainnet's batch length), ADR-022 (the gateway budget, which one process must
+now track once rather than twice)
+**Affects:** `nimiq/rpc.go`, `cmd/server/main.go`, `httpapi/router.go`,
+`cmd/seed/main.go`, `components/payment/mobile-checkout.tsx`,
+`backend/.env.production.example`, `frontend/web/.env.production.example`
+
+### Problem
+
+Nimpass was built network-agnostic and developed on Testnet. Every economic
+check already compared a transaction against the intent's own snapshotted
+network, and `config.Parse` already refused `production` with anything but
+`MAINNET`. What was missing was everything between those two facts and a
+deployment someone could actually launch.
+
+Four gaps, in descending order of consequence:
+
+1. **Startup could refuse to boot for a reason that says nothing about the
+   configuration.** `CheckNetwork` was called at startup and only
+   `ErrRPCUnavailable` was tolerated. A `429` from a shared public gateway —
+   which is the expected condition on `rpc.nimiqwatch.com`, twenty requests per
+   fixed ten-second window per IP — was fatal. The one error that *must* be
+   fatal, a wrong chain, was not distinguishable from any other: it was a bare
+   `errors.New("nimiq RPC network mismatch")` that no caller could match on.
+
+2. **Readiness never asked the chain anything.** `/health/ready` checked
+   PostgreSQL and the migration checksums. A deployment pointed at the wrong
+   network — one subdomain's difference between `rpc.nimiqwatch.com` and
+   `rpc.testnet.nimiqwatch.com` — reported itself ready and would have
+   surfaced as purchases that never settle.
+
+3. **One process held two RPC clients.** The reconciler built one in `main.go`
+   and the router built another in `newPayments`. The gateway budget ADR-022
+   tracks is per IP, not per client object, so two clients each believing they
+   had the whole window would together spend twice it. The proven-network and
+   chain-head caches were duplicated for the same reason.
+
+4. **One production screen still gave Testnet instructions.** The mobile
+   checkout told every customer "For Testnet, long-press Settings for 10
+   seconds and choose Testnet" — on a Mainnet deployment, an instruction to
+   move a real wallet onto play money before paying.
+
+### Decision
+
+**A wrong chain is fatal; everything else is weather.** `ErrRPCNetworkMismatch`
+is a sentinel, and `RPCClient.Probe` returns a structured `NetworkProbe` whose
+`Status` is one of `verified`, `mismatch` or `unverified` rather than an error
+string. Startup fails closed on `mismatch` and on a malformed reply — an
+endpoint that is not a Nimiq PoS RPC at all is a configuration error of the
+same kind — and warns on anything else, so a throttled or briefly unreachable
+node no longer prevents a boot. `/health/ready` applies the same split: `503
+NIMIQ_NETWORK_MISMATCH` on a wrong chain, `200` with
+`nimiq.status = "unverified"` on an outage, because public browsing continuing
+through an RPC outage is the existing contract (docs/05 §97).
+
+The proof itself is unchanged and still does not depend on `getNetworkId`,
+which neither public gateway serves: it asks that method first and falls back
+to the `network` field of `getLatestBlock`, which is the chain's own statement
+rather than a node's self-report.
+
+**One RPC client per process.** `NewRouterWithChain` takes the client the
+server already built. `NewRouterWithConfig` still constructs one for the
+database-free unit-test routers.
+
+**The customer-facing network instruction follows the intent, not the build.**
+`networkHint(request.network)` — the network the backend stamped on this
+purchase intent — so a Mainnet customer is told that a normal Nimiq Pay install
+is already on Mainnet, and a Testnet customer still gets the dev-menu
+instructions.
+
+### What was deliberately not changed
+
+**The environment/network pairing stays one-to-one.** `production ⇔ MAINNET`
+and `development`/`test` ⇔ `TESTNET`, with no configuration that reaches any
+other combination. A staging environment on Mainnet would need a decision about
+whose money it spends; this ADR does not make it.
+
+**Historical Testnet data is not migrated.** `BindDeployment` already refuses to
+start against rows from another network, and that refusal is now a test rather
+than a comment. A transaction hash belongs permanently to the chain it was made
+on, so relabelling a Testnet purchase as `MAINNET` would not migrate it — it
+would manufacture a confirmed purchase whose receipt names a transaction that
+does not exist on Mainnet. **Production requires an empty database.**
+
+**No verification was added, removed or relaxed.** The network, recipient,
+exact integer Luna, `NP1` reference, sending wallet where the chain carries
+nothing purchase-specific, execution result, canonical inclusion, macro-block
+finality, the intent's window and global hash uniqueness are the same checks
+against the same snapshot they were on Testnet. The `NP1` format is unchanged.
+
+### Consequences
+
+`rpc.nimiqwatch.com` is confirmed to serve Mainnet with every method Nimpass
+calls, at the same response shapes (verified 2026-09-18: `MainAlbatross`,
+`networkId` 24, a real transaction inspected through the full pipeline to macro
+finality). It remains a free, unmetered-SLA public gateway, so running a
+launch against it means accepting that a shared budget can decide how fast a
+customer sees their Pass. `NIMIQ_RPC_URL` is where a deployment's own history
+node goes, and `.env.production.example` says so.
+
+Mainnet's batch is 60 blocks at roughly one second each, so under
+`NIMIQ_CONFIRMATION_POLICY=finality` a customer waits nought to sixty seconds
+on a payment that is already on chain. The product's default remains
+`inclusion` (ADR-021).

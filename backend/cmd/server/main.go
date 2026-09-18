@@ -46,13 +46,54 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	rpc := nimiq.NewRPCClient(cfg.RPCURL)
+	// Prove the endpoint is serving the chain this deployment settles against,
+	// before anything can be verified against it.
+	//
+	// The split here is the whole point. A *mismatch* is fatal: a Mainnet
+	// deployment reading a Testnet node would check real purchases against
+	// play money, so the process refuses to start rather than start wrong
+	// (docs/05 §92, §94). Everything else — unreachable, throttled, a node
+	// still syncing, a gateway that will not answer — is uncertainty, and
+	// uncertainty must not take the whole service down: public browsing keeps
+	// working and reconciliation retries, and readiness keeps re-asking
+	// (docs/05 §97). Throttling in particular used to be fatal here, which
+	// meant a shared public gateway's 429 could stop a deployment from booting
+	// for a reason that says nothing about the configuration.
 	checkCtx, cancelCheck := context.WithTimeout(ctx, 5*time.Second)
-	err = rpc.CheckNetwork(checkCtx, cfg.Network)
+	probe := rpc.Probe(checkCtx, cfg.Network)
 	cancelCheck()
-	if errors.Is(err, nimiq.ErrRPCUnavailable) {
-		logger.Warn("Nimiq RPC unavailable at startup; payment reconciliation will retry")
-	} else if err != nil {
-		return err
+	switch probe.Status {
+	case nimiq.NetworkVerified:
+		logger.Info("nimiq RPC network verified",
+			"configured_network", cfg.Network,
+			"observed_chain", probe.Observed,
+			"source", probe.Source,
+			"environment", cfg.Environment)
+	case nimiq.NetworkMismatch:
+		logger.Error("nimiq RPC network mismatch",
+			"configured_network", cfg.Network,
+			"expected_chain", probe.Expected,
+			"observed_chain", probe.Observed,
+			"source", probe.Source,
+			"environment", cfg.Environment)
+		return probe.Err()
+	default:
+		// A malformed reply keeps its old fatal status. It does not mean the
+		// node is busy or behind; it means the configured endpoint is not a
+		// Nimiq PoS JSON-RPC server, which is a configuration error of exactly
+		// the same kind as the wrong chain and is not going to resolve itself
+		// by retrying.
+		if errors.Is(probe.Cause, nimiq.ErrRPCMalformed) {
+			logger.Error("nimiq RPC returned a malformed network response",
+				"configured_network", cfg.Network,
+				"expected_chain", probe.Expected,
+				"environment", cfg.Environment)
+			return probe.Err()
+		}
+		logger.Warn("nimiq RPC unverified at startup; payment reconciliation will retry",
+			"configured_network", cfg.Network,
+			"expected_chain", probe.Expected,
+			"environment", cfg.Environment)
 	}
 	// One reconciler, two ways a purchase reaches it: a hash a client reported,
 	// and a payment the server found for itself. Discovery is what makes the QR
@@ -76,7 +117,7 @@ func run(logger *slog.Logger) error {
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddress,
-		Handler:           httpapi.NewRouterWithConfig(pool, logger, cfg),
+		Handler:           httpapi.NewRouterWithChain(pool, logger, cfg, rpc),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

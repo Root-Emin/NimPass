@@ -4,7 +4,7 @@ Independent MIT-licensed Go/Chi/PostgreSQL backend for the Nimpass session-pass 
 
 ## Run
 
-Set `DATABASE_URL` to a PostgreSQL database URL and explicitly set `APP_ENV` to `development`, `test`, or `production` and `NIMIQ_NETWORK` to `TESTNET` or `MAINNET`; missing environment or network values are rejected by both server and migrator. `HTTP_ADDR` defaults to `:8080`. `NIMIQ_RPC_URL` must point to a trusted, synced PoS JSON-RPC node on the same network. Startup refuses an RPC network mismatch; production RPC requires HTTPS. `PUBLIC_ORIGIN` must be the exact browser/Mini App frontend origin allowed to make credentialed requests. Production requires HTTPS and an explicit database `sslmode=require`, `verify-ca`, or `verify-full` (prefer `verify-full` with the deployment CA). Session cookies default to Secure; for local HTTP only, opt in explicitly with `SESSION_COOKIE_MODE=local-insecure` and a non-production `APP_ENV`. `TRUSTED_PROXY_CIDRS` is an optional comma-separated list; forwarded client IP headers are ignored unless the direct peer belongs to one of these CIDRs. `NIMIQ_SIGNING_SCHEME` selects which envelope wallet signatures are verified against — `raw` (default, the message bytes as handed to `sign()`) or `hub` (the Nimiq signed-message envelope). The Mini Apps API reference specifies `sign()`'s parameters and result but not what the host signs, and `@nimiq/mini-app-sdk` forwards the message untouched, so the value is settled by one device capture: `go run ./cmd/verify-sign-fixture -scheme auto -message '<challenge>' -wallet 'NQ…' -public-key <hex> -signature <hex>` names the scheme that verifies. Exactly one scheme is ever active; the server never falls back between them. `NIMIQ_CONFIRMATION_POLICY` selects how much chain certainty a payment must accumulate before the Pass is issued — `inclusion` (default) issues on canonical micro-block inclusion and tracks finality in the background, `finality` waits for the macro block. It governs the wait, not the validation: network, recipient, exact Luna, reference or sending wallet, execution result, canonical inclusion, the intent's window and global hash uniqueness are required under both, and a mempool transaction settles nothing under either. Under `inclusion` a Pass exists for up to a batch on evidence that is canonical but not yet irreversible and is redeemable in that window; a settlement the chain later reverses withdraws the Pass and opens a `PAYMENT_SETTLEMENT_REVERSED` compensation case with `doNotPayAgain: false`. An unrecognised value fails startup. See `docs/DECISIONS.md` ADR-021. `.env.example` contains placeholders; the application does not automatically read `.env` files.
+Set `DATABASE_URL` to a PostgreSQL database URL and explicitly set `APP_ENV` to `development`, `test`, or `production` and `NIMIQ_NETWORK` to `TESTNET` or `MAINNET`; missing environment or network values are rejected by both server and migrator. `HTTP_ADDR` defaults to `:8080`. `NIMIQ_RPC_URL` must point to a trusted, synced PoS JSON-RPC node on the same network. Startup refuses an RPC network mismatch; production RPC requires HTTPS. `PUBLIC_ORIGIN` must be the exact browser/Mini App frontend origin allowed to make credentialed requests. Production requires HTTPS and an explicit database `sslmode=require`, `verify-ca`, or `verify-full` (prefer `verify-full` with the deployment CA). Session cookies default to Secure; for local HTTP only, opt in explicitly with `SESSION_COOKIE_MODE=local-insecure` and a non-production `APP_ENV`. `TRUSTED_PROXY_CIDRS` is an optional comma-separated list; forwarded client IP headers are ignored unless the direct peer belongs to one of these CIDRs. `NIMIQ_SIGNING_SCHEME` selects which envelope wallet signatures are verified against — `raw` (default, the message bytes as handed to `sign()`) or `hub` (the Nimiq signed-message envelope). The Mini Apps API reference specifies `sign()`'s parameters and result but not what the host signs, and `@nimiq/mini-app-sdk` forwards the message untouched, so the value is settled by one device capture: `go run ./cmd/verify-sign-fixture -scheme auto -message '<challenge>' -wallet 'NQ…' -public-key <hex> -signature <hex>` names the scheme that verifies. Exactly one scheme is ever active; the server never falls back between them. `NIMIQ_CONFIRMATION_POLICY` selects how much chain certainty a payment must accumulate before the Pass is issued — `inclusion` (default) issues on canonical micro-block inclusion and tracks finality in the background, `finality` waits for the macro block. It governs the wait, not the validation: network, recipient, exact Luna, reference or sending wallet, execution result, canonical inclusion, the intent's window and global hash uniqueness are required under both, and a mempool transaction settles nothing under either. Under `inclusion` a Pass exists for up to a batch on evidence that is canonical but not yet irreversible and is redeemable in that window; a settlement the chain later reverses withdraws the Pass and opens a `PAYMENT_SETTLEMENT_REVERSED` compensation case with `doNotPayAgain: false`. An unrecognised value fails startup. See `docs/DECISIONS.md` ADR-021. `.env.example` (development/Testnet) and `.env.production.example` (production/Mainnet) contain placeholders; the application does not automatically read `.env` files. The Mainnet deployment model is described under [Mainnet production deployment](#mainnet-production-deployment) and in `docs/DECISIONS.md` ADR-028.
 
 From `backend/`:
 
@@ -48,7 +48,7 @@ development tooling only: a deployment supplies its own trusted, synced RPC
 endpoint. Until consensus is established the backend cannot verify any payment,
 so purchases stay pending and no Pass is issued.
 
-The server requires PostgreSQL and a configured RPC URL. It rejects a reachable RPC network mismatch or malformed response at startup; a temporary RPC outage is logged and payment reconciliation retries while public reads remain available. `GET /health/live` reports process health; `GET /health/ready` checks PostgreSQL and the full migration version/checksum set. Ship the `migrations/` directory with the binary, or set `MIGRATIONS_DIR` to its absolute path. The versioned API contract is [openapi.yaml](openapi.yaml). Mission 02 implements authentication and catalog management. Mission 03 adds purchase intents, transaction verification, macro-block finality, background/manual reconciliation and atomic Pass creation. Mission 04 adds customer-signed redemption challenges, opaque short-lived redemption references, provider lookup, explicit provider confirmation, atomic one-session consumption and customer/provider history. The HTTP server has bounded headers/body handling, production security headers, sanitized correlation IDs and explicit read/write/idle timeouts.
+The server requires PostgreSQL and a configured RPC URL. It rejects a reachable RPC network mismatch or malformed response at startup; a temporary RPC outage or rate limit is logged and payment reconciliation retries while public reads remain available. `GET /health/live` reports process health; `GET /health/ready` checks PostgreSQL, the full migration version/checksum set, and the chain the configured RPC endpoint is actually serving — answering `503 NIMIQ_NETWORK_MISMATCH` for a wrong network and `200` with `nimiq.status: "unverified"` for an endpoint it could not read. See [Mainnet production deployment](#mainnet-production-deployment). Ship the `migrations/` directory with the binary, or set `MIGRATIONS_DIR` to its absolute path. The versioned API contract is [openapi.yaml](openapi.yaml). Mission 02 implements authentication and catalog management. Mission 03 adds purchase intents, transaction verification, macro-block finality, background/manual reconciliation and atomic Pass creation. Mission 04 adds customer-signed redemption challenges, opaque short-lived redemption references, provider lookup, explicit provider confirmation, atomic one-session consumption and customer/provider history. The HTTP server has bounded headers/body handling, production security headers, sanitized correlation IDs and explicit read/write/idle timeouts.
 
 The frontend signs the exact `message` returned by `POST /api/v1/auth/challenges` or the payout/redemption challenge endpoint with Nimiq Pay `sign(message)` and sends the returned hex `publicKey` and `signature`. Payout verification additionally needs `ownerPublicKey` and `ownerSignature` from a fresh signature by the authenticated login wallet over that same message. The backend never accepts a client-reconstructed message or a claimed wallet without public-key binding. The Nimiq Mini App documentation specifies the response shape but not the precise host-side signing prehash/prefix semantics; the isolated `internal/nimiq` adapter uses the single configured `NIMIQ_SIGNING_SCHEME` with no runtime fallback. Its default remains `raw`; no live evidence was used to change it. `go run ./cmd/verify-sign-fixture -message "$MESSAGE" -wallet "$WALLET" -public-key "$PUBLIC_KEY" -signature "$SIGNATURE"` reports which supported scheme verifies a captured fixture, independently of the server configuration. A fixture consists of exactly `wallet`, `message`, `publicKey`, `signature`, and expected `verified` result; it never contains a private key. A real Nimiq Pay WebView fixture remains a release blocker.
 
@@ -219,6 +219,76 @@ Profile edits preserve omitted/null optional fields; `""` clears text/media fiel
 Service create/edit/output adds `category`. Values: `fitness`, `tutoring`, `languages`, `coaching`, `wellness`, `music`, `beauty`, `consulting`, `mentoring`. The empty string means unclassified and maps to SQL NULL; legacy records stay unclassified. Omitted category on edit preserves the existing value. Passes inherit their service's current category, exposed as `offer.service.category`; no duplicate Pass taxonomy or historical category snapshot is invented.
 
 Pass list and detail share the same DTO. In addition to the previous fields, they expose existing immutable snapshots `serviceName`, `providerName`, `priceLuna`, and the stored `completedAt`. List expiry is evaluated before filtering. Pagination uses `(created_at, id)` descending, avoiding offset duplication for equally dated records. Keep the status filter the same across pages; concurrent redemption can naturally move an item between status groups. A cursor is pagination context, never authorization.
+
+## Mainnet production deployment
+
+Nimpass runs on exactly two networks, and which one is not a runtime choice.
+
+| | Development / test | Production |
+| --- | --- | --- |
+| `APP_ENV` | `development` / `test` | `production` |
+| `NIMIQ_NETWORK` | `TESTNET` | `MAINNET` |
+| Chain identity | `TestAlbatross`, `networkId` 5 | `MainAlbatross`, `networkId` 24 |
+| `NIMIQ_RPC_URL` | local node, or `https://rpc.testnet.nimiqwatch.com` | your Mainnet history node, or `https://rpc.nimiqwatch.com` |
+| Nimiq Hub (browser fallback only) | `https://hub.nimiq-testnet.com` | `https://hub.nimiq.com` |
+| Database | disposable | its own, empty at first boot |
+| Funds | test NIM from the faucet | real NIM |
+| Template | `.env.example` | `.env.production.example` |
+
+`config.Parse` binds the first two rows to each other: `production` requires
+`MAINNET`, `development`/`test` require `TESTNET`, and every other pairing —
+including an unset or lower-case value — fails startup. There is no
+configuration in which a production deployment settles against Testnet, and
+none in which a development deployment can spend real NIM.
+
+**The network is proven against the chain, not read off the configuration.**
+At startup and on every readiness check the backend asks the configured
+endpoint which chain it serves: `getNetworkId` first, and where a gateway keeps
+that method outside its allowlist — both nimiqwatch endpoints do — the
+`network` field of `getLatestBlock`, which is the chain's own statement rather
+than a node's self-report. The three outcomes are distinct on purpose:
+
+| Outcome | Startup | `/health/ready` |
+| --- | --- | --- |
+| Serving the expected chain | starts, logs `nimiq RPC network verified` | `200`, `nimiq.status: "verified"` |
+| Serving a different chain | **refuses to start** | **`503 NIMIQ_NETWORK_MISMATCH`** |
+| Malformed reply (not a Nimiq PoS RPC) | **refuses to start** | `200`, `nimiq.status: "unverified"` |
+| Unreachable, throttled, still syncing | starts with a warning | `200`, `nimiq.status: "unverified"` |
+
+A wrong chain fails closed because a Mainnet purchase settled against a Testnet
+transaction is unrecoverable. An unreachable node does not, because an RPC
+outage is uncertainty about one payment, not a reason to stop serving the
+catalogue — reconciliation retries and readiness keeps re-asking. Readiness
+reports the expected and observed chain names and how they were established; it
+never reports the endpoint URL or any credential.
+
+**Production needs its own, empty database.** A database is bound to one
+network/environment on first boot, and a server refuses to start against
+purchases or challenges from another. That refusal is the point: existing
+Testnet transaction hashes and receipts belong permanently to Testnet, so they
+are never relabelled, migrated or reused. Point production at a fresh database
+and run `go run ./cmd/migrate` before the first boot.
+
+**The RPC endpoint is the one value a launch still has to supply.**
+`https://rpc.nimiqwatch.com` is a real Mainnet history node and works with this
+backend unchanged — verified 2026-09-18 serving `MainAlbatross`, `networkId`
+24, with `getTransactionByHash`, `getTransactionsByAddress`,
+`getBlockByNumber`, `getMacroBlockAfter`, `getLatestBlock` and
+`isConsensusEstablished` all answering at the shapes the adapter expects. It is
+a free public gateway with a hard budget of 20 requests per fixed 10-second
+window per IP and no SLA, and the Nimiq documentation presents open RPC servers
+for testing and development. Using it for a launch means accepting that a
+shared budget, rather than the chain, can decide how quickly a customer sees
+their Pass. Set `NIMIQ_RPC_URL` to your own synced Mainnet **history** node for
+anything beyond a demo; it must be a history node because the desktop QR
+checkout finds payments by address.
+
+Nothing in the frontend is trusted as evidence of a network. `VITE_NIMIQ_NETWORK`
+states which deployment a bundle belongs to and is validated against
+`VITE_APP_ENV` at build time; Nimiq Pay picks its own network and its hidden
+developer menu can force either one, so the backend re-derives every
+transaction's network from the chain and refuses a cross-network payment
+outright.
 
 ## Deployment contract
 

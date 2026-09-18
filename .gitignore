@@ -13,6 +13,11 @@
 !.env.example
 !*.env.example
 !.env.sample
+# Environment *templates* are documentation, not secrets, and must stay
+# tracked — including the per-environment ones. `.env.*` above swallows
+# `.env.production.example`, so each template is re-admitted by name.
+!.env.production.example
+!.env.development.example
 
 # --- Secrets: key and certificate material ----------------------------------
 *.pem

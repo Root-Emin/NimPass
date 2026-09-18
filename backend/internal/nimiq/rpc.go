@@ -16,6 +16,18 @@ import (
 )
 
 var ErrRPCUnavailable = errors.New("nimiq RPC unavailable")
+
+// ErrRPCNetworkMismatch is the one RPC condition that must never be retried,
+// tolerated or merely warned about: the endpoint is serving a different chain
+// from the one this deployment settles payments on.
+//
+// It is a sentinel rather than a bare error because the two callers that decide
+// whether the process may run at all — startup and readiness — have to tell it
+// apart from every other failure. An unreachable, throttled or slow node is
+// uncertainty, and the server keeps serving; a node on the wrong chain is a
+// misconfiguration that could settle a Mainnet purchase against a Testnet
+// transaction, so it fails closed (docs/05 §92, §94, docs/09-SECURITY.md §101).
+var ErrRPCNetworkMismatch = errors.New("nimiq RPC network mismatch")
 var ErrRPCNotFound = errors.New("nimiq transaction not found")
 var ErrRPCMalformed = errors.New("malformed Nimiq RPC response")
 
@@ -475,7 +487,7 @@ func (c *RPCClient) Head(ctx context.Context, network string) (ChainHead, error)
 		return ChainHead{}, err
 	}
 	if head.Network != expected {
-		return ChainHead{}, errors.New("nimiq RPC network mismatch")
+		return ChainHead{}, ErrRPCNetworkMismatch
 	}
 	return ChainHead{Number: head.Number, Hash: head.Hash}, nil
 }
@@ -524,7 +536,7 @@ func (c *RPCClient) CheckNetwork(ctx context.Context, network string) error {
 	actual, err := c.NetworkID(ctx)
 	if err == nil {
 		if actual != expected {
-			return errors.New("nimiq RPC network mismatch")
+			return fmt.Errorf("%w: configured for %s, endpoint serves %s", ErrRPCNetworkMismatch, expected, actual)
 		}
 		c.rememberNetwork(network)
 		return nil
@@ -537,10 +549,121 @@ func (c *RPCClient) CheckNetwork(ctx context.Context, network string) error {
 		return err
 	}
 	if head.Network != expected {
-		return errors.New("nimiq RPC network mismatch")
+		return fmt.Errorf("%w: configured for %s, endpoint serves %s", ErrRPCNetworkMismatch, expected, head.Network)
 	}
 	c.rememberNetwork(network)
 	return nil
+}
+
+// NetworkProbe is what an operator needs to answer "which chain is this
+// deployment actually settling against?" — and nothing else.
+//
+// Deliberately carries no endpoint URL, no credentials and no host name. It is
+// rendered into `/health/ready` and into startup logs, both of which are read
+// by more people than the configuration is (docs/09-SECURITY.md §88).
+type NetworkProbe struct {
+	// Expected is the chain the deployment is configured for, as the chain
+	// itself names it: `MainAlbatross` or `TestAlbatross`.
+	Expected string
+	// Observed is the chain the endpoint answered with, empty when it could
+	// not be established.
+	Observed string
+	// Source names how Observed was established: "getNetworkId" when the node
+	// served it, "block" when it was proven from `getLatestBlock` instead.
+	Source string
+	// Status is one of:
+	//   verified   the endpoint is serving the expected chain
+	//   mismatch   the endpoint is serving a different chain — fail closed
+	//   unverified the endpoint could not be read at all — uncertainty
+	Status string
+	// Head is the chain height, when a block was read on the way.
+	Head uint32
+	// Cause is why an `unverified` probe could not establish the chain. Nil
+	// for `verified` and for `mismatch`, both of which are answers rather than
+	// failures.
+	//
+	// It exists so a caller can keep treating a *malformed* reply as a
+	// configuration error — an endpoint that is not a Nimiq PoS RPC at all is
+	// as wrong as one on the other chain — while still tolerating a timeout or
+	// a 429.
+	Cause error
+}
+
+const (
+	NetworkVerified   = "verified"
+	NetworkMismatch   = "mismatch"
+	NetworkUnverified = "unverified"
+)
+
+// Probe reports the network the endpoint is serving, as a structured fact
+// rather than as an error string.
+//
+// It runs the same proof `CheckNetwork` runs — `getNetworkId` first, the
+// `getLatestBlock` network field where the gateway refuses that method — and
+// differs only in what it returns: a caller that has to *report* the state
+// needs to distinguish "wrong chain" from "could not ask", and an error alone
+// makes that a matter of string comparison.
+//
+// It never caches a failure and never widens what CheckNetwork would accept:
+// `Status` is `verified` only where CheckNetwork would have returned nil.
+func (c *RPCClient) Probe(ctx context.Context, network string) NetworkProbe {
+	expected, _, err := ExpectedNetworkID(network)
+	if err != nil {
+		return NetworkProbe{Status: NetworkUnverified}
+	}
+	probe := NetworkProbe{Expected: expected, Status: NetworkUnverified}
+	if c == nil || c.URL == "" {
+		return probe
+	}
+	// A proof that is still inside its TTL answers this without spending a
+	// request. That matters because the readiness endpoint is polled by
+	// infrastructure on its own schedule, and a probe that cost two tokens
+	// every time would be taking them out of the same twenty-per-ten-seconds
+	// window a customer's settlement is waiting on (ADR-022). Only success is
+	// ever cached, so this can report `verified` and never `mismatch`.
+	if c.networkIsProven(network) {
+		return NetworkProbe{Expected: expected, Observed: expected, Source: "cached", Status: NetworkVerified}
+	}
+	if actual, err := c.NetworkID(ctx); err == nil {
+		probe.Observed, probe.Source = actual, "getNetworkId"
+		probe.Status = NetworkMismatch
+		if actual == expected {
+			probe.Status = NetworkVerified
+			c.rememberNetwork(network)
+		}
+		return probe
+	} else if !errors.Is(err, ErrRPCMethodNotAllowed) {
+		probe.Cause = err
+		return probe
+	}
+	head, err := c.latestBlock(ctx)
+	if err != nil {
+		probe.Cause = err
+		return probe
+	}
+	probe.Observed, probe.Source, probe.Head = head.Network, "block", head.Number
+	probe.Status = NetworkMismatch
+	if head.Network == expected {
+		probe.Status = NetworkVerified
+		c.rememberNetwork(network)
+	}
+	return probe
+}
+
+// Err turns a probe back into the error its status means, so a caller that
+// only wants to fail closed does not have to re-implement the mapping.
+func (p NetworkProbe) Err() error {
+	switch p.Status {
+	case NetworkVerified:
+		return nil
+	case NetworkMismatch:
+		return fmt.Errorf("%w: configured for %s, endpoint serves %s", ErrRPCNetworkMismatch, p.Expected, p.Observed)
+	default:
+		if p.Cause != nil {
+			return p.Cause
+		}
+		return ErrRPCUnavailable
+	}
 }
 
 func (c *RPCClient) networkIsProven(network string) bool {

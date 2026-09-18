@@ -28,12 +28,30 @@ func NewRouter(pool *pgxpool.Pool, logger *slog.Logger) http.Handler {
 // newPayments builds the payment service with both chain roles filled by the
 // one configured RPC client: Inspect for a nominated hash, and address
 // discovery for a payment that was never reported (ADR-006 gate G2).
-func newPayments(pool *pgxpool.Pool, cfg config.Config, logger *slog.Logger) application.Payments {
-	rpc := nimiq.NewRPCClient(cfg.RPCURL)
+func newPayments(pool *pgxpool.Pool, cfg config.Config, rpc *nimiq.RPCClient, logger *slog.Logger) application.Payments {
 	return application.Payments{Store: database.PaymentRepository{Pool: pool}, Chain: rpc, Discovery: rpc, Head: rpc, Network: domain.NimiqNetwork(cfg.Network), Confirmation: cfg.ConfirmationPolicy, Now: time.Now, Log: logger}
 }
 
 func NewRouterWithConfig(pool *pgxpool.Pool, logger *slog.Logger, cfg config.Config) http.Handler {
+	return NewRouterWithChain(pool, logger, cfg, nil)
+}
+
+// NewRouterWithChain builds the router around an RPC client the caller already
+// owns.
+//
+// The server passes the same `*nimiq.RPCClient` it gave the reconciler, and
+// that sharing is a correctness property rather than a tidiness one. The
+// client is where the gateway's published budget is tracked — twenty requests
+// per fixed ten-second window on rpc.nimiqwatch.com, counted per IP, not per
+// client object (ADR-022). Two clients in one process each believe they have
+// the whole window, so together they spend twice it and the *process* gets
+// 429s that neither of them predicted; the proven-network and chain-head
+// caches are duplicated for the same reason. Nil builds a client from the
+// configured URL, which is what the database-free unit-test routers do.
+func NewRouterWithChain(pool *pgxpool.Pool, logger *slog.Logger, cfg config.Config, rpc *nimiq.RPCClient) http.Handler {
+	if rpc == nil {
+		rpc = nimiq.NewRPCClient(cfg.RPCURL)
+	}
 	r := chi.NewRouter()
 	r.Use(sanitizeRequestID)
 	r.Use(middleware.RequestID)
@@ -61,7 +79,7 @@ func NewRouterWithConfig(pool *pgxpool.Pool, logger *slog.Logger, cfg config.Con
 		preprocess = nimiq.RawMessage
 	}
 	verifier := nimiq.Ed25519Verifier{Preprocess: preprocess}
-	h := &handler{auth: application.Auth{Store: database.AuthRepository{Pool: pool}, Verifier: verifier, Network: cfg.Network, Environment: cfg.Environment, Now: time.Now}, catalog: application.Catalog{Store: database.CatalogRepository{Pool: pool}, Now: time.Now}, payments: newPayments(pool, cfg, logger), redemptions: application.Redemptions{Store: database.PaymentRepository{Pool: pool}, Passes: database.PaymentRepository{Pool: pool}, Verifier: verifier, Network: domain.NimiqNetwork(cfg.Network), Environment: cfg.Environment, Now: time.Now}, passSessions: application.PassSessions{Store: database.PaymentRepository{Pool: pool}, Now: time.Now}, cfg: cfg, limits: newLimiter()}
+	h := &handler{auth: application.Auth{Store: database.AuthRepository{Pool: pool}, Verifier: verifier, Network: cfg.Network, Environment: cfg.Environment, Now: time.Now}, catalog: application.Catalog{Store: database.CatalogRepository{Pool: pool}, Now: time.Now}, payments: newPayments(pool, cfg, rpc, logger), redemptions: application.Redemptions{Store: database.PaymentRepository{Pool: pool}, Passes: database.PaymentRepository{Pool: pool}, Verifier: verifier, Network: domain.NimiqNetwork(cfg.Network), Environment: cfg.Environment, Now: time.Now}, passSessions: application.PassSessions{Store: database.PaymentRepository{Pool: pool}, Now: time.Now}, cfg: cfg, limits: newLimiter()}
 	mediaDir := cfg.MediaDir
 	if mediaDir == "" {
 		mediaDir = "var/media"
@@ -115,7 +133,53 @@ func NewRouterWithConfig(pool *pgxpool.Pool, logger *slog.Logger, cfg config.Con
 			apiFailure(w, req, http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "Database unavailable")
 			return
 		}
-		writeHealth(w, http.StatusOK, "ready")
+		// Which chain this deployment is actually settling against, asked of
+		// the chain rather than of the configuration.
+		//
+		// Configuration already refuses `production` with anything but
+		// MAINNET, but that only proves what the operator *wrote*. Pointing a
+		// Mainnet deployment at a Testnet endpoint is a single-character
+		// mistake in an environment variable, and it would otherwise surface
+		// as payments that never settle rather than as a misconfiguration.
+		//
+		// A mismatch fails readiness closed: this instance must not take
+		// traffic, because every purchase it verified would be verified
+		// against the wrong ledger. Anything else — unreachable, throttled, a
+		// node still syncing — is uncertainty and leaves the instance ready,
+		// which is the existing contract: public browsing continues and
+		// payment reconciliation retries (docs/05 §97).
+		probeCtx, cancelProbe := context.WithTimeout(req.Context(), 3*time.Second)
+		probe := rpc.Probe(probeCtx, cfg.Network)
+		cancelProbe()
+		if probe.Status == nimiq.NetworkMismatch {
+			logger.Error("nimiq RPC network mismatch",
+				"configured_network", cfg.Network,
+				"expected_chain", probe.Expected,
+				"observed_chain", probe.Observed,
+				"source", probe.Source,
+				"environment", cfg.Environment)
+			apiFailure(w, req, http.StatusServiceUnavailable, "NIMIQ_NETWORK_MISMATCH", "Nimiq RPC is serving a different network")
+			return
+		}
+		if probe.Status != nimiq.NetworkVerified {
+			logger.Warn("nimiq RPC network unverified",
+				"configured_network", cfg.Network,
+				"expected_chain", probe.Expected,
+				"environment", cfg.Environment)
+		}
+		respond(w, http.StatusOK, map[string]any{
+			"status":      "ready",
+			"environment": cfg.Environment,
+			"network":     cfg.Network,
+			// No endpoint URL, host or credential: readiness is read by more
+			// people than the configuration is (docs/09-SECURITY.md §88).
+			"nimiq": map[string]any{
+				"status":        probe.Status,
+				"expectedChain": probe.Expected,
+				"observedChain": probe.Observed,
+				"source":        probe.Source,
+			},
+		})
 	})
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Get("/public/config", func(w http.ResponseWriter, _ *http.Request) {
