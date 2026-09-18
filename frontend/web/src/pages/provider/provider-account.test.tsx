@@ -2,7 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { aProvider, aService, domainError, mockApi, ok } from '@/test/mock-api'
+import { aPass, aProvider, aPublicPass, aService, domainError, mockApi, ok } from '@/test/mock-api'
 import { renderApp, stubSession, stubWallet } from '@/test/render'
 
 afterEach(() => {
@@ -13,6 +13,18 @@ const WALLET = stubWallet()
 const PROVIDER_ID = '00000000-0000-4000-8000-000000000002'
 const SERVICE_ID = '00000000-0000-4000-8000-000000000003'
 const NEW_PROVIDER_ID = '00000000-0000-4000-8000-0000000000aa'
+const CREATED_PASS_ID = 'ffffffff-0000-4000-8000-000000000001'
+
+/**
+ * A created Pass is published in the same press and opens on its public page,
+ * so every create stubs the two routes that happen after the write.
+ */
+const PUBLISH_ROUTES = {
+  [`POST /api/v1/catalog/passes/${CREATED_PASS_ID}/publish`]: () =>
+    ok(aPass({ id: CREATED_PASS_ID, status: 'ACTIVE' })),
+  [`/api/v1/public/passes/${CREATED_PASS_ID}`]: () =>
+    ok(aPublicPass({ pass: aPass({ id: CREATED_PASS_ID, status: 'ACTIVE' }) })),
+}
 
 /** A signed-in wallet that has never sold anything: no provider record at all. */
 const NO_PROVIDER = { '/api/v1/providers': () => ok({ items: [] }) }
@@ -70,7 +82,8 @@ describe('a wallet that owns no provider record', () => {
       [`PATCH /api/v1/services/${SERVICE_ID}`]: () =>
         ok(aService({ id: SERVICE_ID, providerId: NEW_PROVIDER_ID, status: 'ACTIVE' })),
       [`POST /api/v1/providers/${NEW_PROVIDER_ID}/services/${SERVICE_ID}/passes`]: () =>
-        ok({ id: 'ffffffff-0000-4000-8000-000000000001' }, 201),
+        ok(aPass({ id: CREATED_PASS_ID, status: 'DRAFT' }), 201),
+      ...PUBLISH_ROUTES,
     })
 
     const user = userEvent.setup()
@@ -172,7 +185,9 @@ describe('a wallet that already owns one', () => {
       [`POST /api/v1/providers/${PROVIDER_ID}/services`]: () => ok(aService({ id: SERVICE_ID }), 201),
       [`PATCH /api/v1/services/${SERVICE_ID}`]: () =>
         ok(aService({ id: SERVICE_ID, status: 'ACTIVE' })),
-      [`POST /api/v1/providers/${PROVIDER_ID}/services/${SERVICE_ID}/passes`]: () => ok({}, 201),
+      [`POST /api/v1/providers/${PROVIDER_ID}/services/${SERVICE_ID}/passes`]: () =>
+        ok(aPass({ id: CREATED_PASS_ID, status: 'DRAFT' }), 201),
+      ...PUBLISH_ROUTES,
     })
 
     const user = userEvent.setup()

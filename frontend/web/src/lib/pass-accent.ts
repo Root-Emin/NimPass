@@ -101,12 +101,23 @@ export function accentFromSeed(seed: string): PassAccent {
 }
 
 /**
- * Starting colour when the provider has not picked yet.
+ * The colour a recognised kind of service wears, or null when the words name
+ * no kind at all.
  *
- * Kind-aware so a guitar pass does not open on pine just because pine is
- * the product chrome. Once they pick, `stored` wins on every screen.
+ * Split out of `suggestAccent` because the two halves of that answer behave
+ * very differently while somebody is typing, and only one of them is safe to
+ * follow live:
+ *
+ *   kind colour   stable — it moves only when the words change the kind, so
+ *                 "Guitar lessons" lands on plum once and stays there
+ *   hash fallback stable only for a *finished* string — "G", "Gu", "Gui" each
+ *                 hash somewhere else, so following it per keystroke repaints
+ *                 the card on every letter
+ *
+ * `null` is what lets a caller tell the two apart and keep the colour it is
+ * already showing instead (`pages/provider/pass-form.tsx`, `nameChanged`).
  */
-export function suggestAccent(serviceName: string, kindId?: string): PassAccent {
+export function accentForKind(kindId: string | undefined): PassAccent | null {
   switch (kindId) {
     case 'music':
       return 'PLUM'
@@ -121,8 +132,21 @@ export function suggestAccent(serviceName: string, kindId?: string): PassAccent 
     case 'art':
       return 'CLAY'
     default:
-      return accentFromSeed(serviceName.trim() || 'Nimpass')
+      return null
   }
+}
+
+/**
+ * Starting colour when the provider has not picked yet.
+ *
+ * Kind-aware so a guitar pass does not open on pine just because pine is
+ * the product chrome. Once they pick, `stored` wins on every screen.
+ *
+ * Only for a name that has stopped moving — a stored pass, a card being
+ * rendered. A field being typed into wants `accentForKind` (above).
+ */
+export function suggestAccent(serviceName: string, kindId?: string): PassAccent {
+  return accentForKind(kindId) ?? accentFromSeed(serviceName.trim() || 'Nimpass')
 }
 
 /** Wire value, or a derived fallback. Never invents a seventh colour. */

@@ -2,7 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { aProvider, aService, domainError, mockApi, ok, offline } from '@/test/mock-api'
+import { aPass, aProvider, aPublicPass, aService, domainError, mockApi, ok, offline } from '@/test/mock-api'
 import { renderApp, stubSession, stubWallet } from '@/test/render'
 
 afterEach(() => {
@@ -15,6 +15,19 @@ const WALLET = stubWallet()
 const PROVIDER_ID = '00000000-0000-4000-8000-000000000002'
 const SERVICE_ID = '00000000-0000-4000-8000-000000000003'
 const SESSION = stubSession()
+const CREATED_PASS_ID = 'ffffffff-0000-4000-8000-000000000001'
+
+/**
+ * What a created Pass now does next: it is published, and the provider lands on
+ * its public page. Every create in here stubs those two routes, because
+ * creating and putting it on sale are one press.
+ */
+const PUBLISH_ROUTES = {
+  [`POST /api/v1/catalog/passes/${CREATED_PASS_ID}/publish`]: () =>
+    ok(aPass({ id: CREATED_PASS_ID, status: 'ACTIVE' })),
+  [`/api/v1/public/passes/${CREATED_PASS_ID}`]: () =>
+    ok(aPublicPass({ pass: aPass({ id: CREATED_PASS_ID, status: 'ACTIVE' }) })),
+}
 
 const EMPTY_WORKSPACE = {
   '/api/v1/providers': () => ok({ items: [aProvider({ id: PROVIDER_ID })] }),
@@ -110,7 +123,8 @@ describe('The service a pass belongs to', () => {
       [`PATCH /api/v1/services/${SERVICE_ID}`]: () =>
         ok(aService({ id: SERVICE_ID, status: 'ACTIVE' })),
       [`POST /api/v1/providers/${PROVIDER_ID}/services/${SERVICE_ID}/passes`]: () =>
-        ok({ id: 'ffffffff-0000-4000-8000-000000000001' }, 201),
+        ok(aPass({ id: CREATED_PASS_ID, status: 'DRAFT' }), 201),
+      ...PUBLISH_ROUTES,
     })
 
     const user = userEvent.setup()
@@ -147,7 +161,9 @@ describe('The service a pass belongs to', () => {
       ...EMPTY_WORKSPACE,
       [`/api/v1/providers/${PROVIDER_ID}/services`]: () =>
         ok({ items: [aService({ id: SERVICE_ID, name: 'Guitar Lessons', status: 'ACTIVE' })] }),
-      [`POST /api/v1/providers/${PROVIDER_ID}/services/${SERVICE_ID}/passes`]: () => ok({}, 201),
+      [`POST /api/v1/providers/${PROVIDER_ID}/services/${SERVICE_ID}/passes`]: () =>
+        ok(aPass({ id: CREATED_PASS_ID, status: 'DRAFT' }), 201),
+      ...PUBLISH_ROUTES,
     })
 
     const user = userEvent.setup()
@@ -242,7 +258,9 @@ describe('Pass form', () => {
   it('converts the NIM price to integer Luna before sending it', async () => {
     const { calls } = mockApi({
       ...WITH_SERVICE,
-      [`POST /api/v1/providers/${PROVIDER_ID}/services/${SERVICE_ID}/passes`]: () => ok({}, 201),
+      [`POST /api/v1/providers/${PROVIDER_ID}/services/${SERVICE_ID}/passes`]: () =>
+        ok(aPass({ id: CREATED_PASS_ID, status: 'DRAFT' }), 201),
+      ...PUBLISH_ROUTES,
     })
 
     const user = userEvent.setup()
@@ -278,7 +296,9 @@ describe('Pass form', () => {
   it('keeps the description folded away until the provider asks for it', async () => {
     const { calls } = mockApi({
       ...WITH_SERVICE,
-      [`POST /api/v1/providers/${PROVIDER_ID}/services/${SERVICE_ID}/passes`]: () => ok({}, 201),
+      [`POST /api/v1/providers/${PROVIDER_ID}/services/${SERVICE_ID}/passes`]: () =>
+        ok(aPass({ id: CREATED_PASS_ID, status: 'DRAFT' }), 201),
+      ...PUBLISH_ROUTES,
     })
 
     const user = userEvent.setup()

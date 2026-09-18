@@ -27,6 +27,10 @@ import type { Luna } from '@/types/domain'
  * Confirming is also the only thing that writes: opening this dialog costs no
  * request, and closing it costs nothing at all — the form is still mounted
  * behind it with every field, the uploaded cover included, exactly as it was.
+ *
+ * What confirming writes is a Pass that is *on sale*. There is no draft step
+ * behind a second button any more, so the copy here says so: this is the last
+ * look before customers can see it.
  */
 export interface PassConfirmation {
   title: string
@@ -52,7 +56,7 @@ export function PassConfirmDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
   pass: PassConfirmation
-  /** True while the Pass is being created. Both actions lock. */
+  /** True while the Pass is being created and published. Both actions lock. */
   busy: boolean
   /** Whatever the backend said, when a confirmed attempt failed. */
   error?: ReactNode
@@ -85,7 +89,8 @@ export function PassConfirmDialog({
                 Ready to create this Pass?
               </DialogPrimitive.Title>
               <DialogPrimitive.Description className="text-body text-ink-muted">
-                This is how your Pass will look and what it will cost. You can keep editing if
+                This is how your Pass will look and what it will cost. Creating it puts it in
+                Discover straight away, where anyone can buy it — you can keep editing if
                 something is not right yet.
               </DialogPrimitive.Description>
             </div>

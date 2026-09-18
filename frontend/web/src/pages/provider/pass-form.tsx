@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   AlertCircle,
   AlignLeft,
@@ -42,7 +42,7 @@ import {
 } from '@/hooks/use-provider-workspace'
 import { civilToIso, DEFAULT_EXPIRY_TIME, isoToCivil } from '@/lib/civil-date'
 import { formatNim, lunaToNimInput, nimToLuna, perSessionLuna } from '@/lib/format'
-import { randomAccent, resolveAccent, type PassAccent } from '@/lib/pass-accent'
+import { accentForKind, randomAccent, resolveAccent, type PassAccent } from '@/lib/pass-accent'
 import { serviceKind } from '@/lib/service-kind'
 import { cn } from '@/lib/utils'
 import type { Pass, PassStatus, Service } from '@/types/domain'
@@ -184,6 +184,14 @@ function PassFields({
   initial?: Pass
 }) {
   const navigate = useNavigate()
+  /*
+   * Why this screen opened, when it opened itself. A create publishes the Pass
+   * it just made and lands on the public page; a publish the backend refused
+   * lands here instead, and the reason travels with the navigation rather than
+   * being re-derived from a mutation this component never ran.
+   */
+  const publishNotice =
+    (useLocation().state as { publishError?: string } | null)?.publishError ?? null
   const save = useSavePass(passId)
   const ensureProvider = useEnsureProvider()
   const ensureService = useEnsureService()
@@ -236,15 +244,25 @@ function PassFields({
 
   /*
    * The pass's name also picks its colour, unless the provider has already
-   * chosen one. The tone is derived from what the pass is called, so "10 Guitar
-   * Lessons" and "10 Personal Training Sessions" open in different quiet colours
-   * rather than in one fixed brand hue.
+   * chosen one. The tone follows what the pass is *called*, so "10 Guitar
+   * Lessons" and "10 Personal Training Sessions" open in different quiet
+   * colours rather than in one fixed brand hue.
+   *
+   * It follows the recognised kind and nothing else, which is the whole of the
+   * fix here. This used to call `resolveAccent`, whose fallback hashes the
+   * name — and a name being typed is a different string on every keystroke, so
+   * "Guitar lessons" repainted the card, the theme swatch and the page ground
+   * thirteen times on its way in. `accentForKind` returns null for a name that
+   * names no kind yet, and null means keep the colour already on screen: the
+   * card now changes at most once, when the words become a kind.
    */
   const nameChanged = (title: string) => {
     setDraft((previous) => ({
       ...previous,
       title,
-      accent: accentTouched ? previous.accent : resolveAccent(null, title, serviceKind(title).id),
+      accent: accentTouched
+        ? previous.accent
+        : (accentForKind(serviceKind(title).id) ?? previous.accent),
     }))
     setErrors((previous) => ({ ...previous, title: undefined }))
   }
@@ -278,7 +296,13 @@ function PassFields({
   // server side of the same promise with an idempotency key).
   const writing = useRef(false)
   const busy =
-    save.isPending || ensureProvider.isPending || ensureService.isPending || writing.current
+    save.isPending ||
+    ensureProvider.isPending ||
+    ensureService.isPending ||
+    // Creating and publishing are one press, so the button stays locked
+    // through the publish too — it is still the same act.
+    publish.isPending ||
+    writing.current
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault()
@@ -359,15 +383,51 @@ function PassFields({
         coverMediaId: draft.coverMediaId,
       })
 
-      // Straight to the Pass that was just made. It is the beginning of the job
-      // rather than the end of it — the next thing a provider wants is to look
-      // at what they made and publish it, and both are on that screen.
+      /*
+       * Creating a Pass puts it on sale. A provider fills this form in to sell
+       * something, and a created Pass used to land in DRAFT behind a second
+       * button on another screen — a step that had to be found before anything
+       * they made could be bought. The publish is part of the same press, and
+       * what it lands on is the Pass's public page: the thing customers see,
+       * and the link the provider shares.
+       *
+       * The backend still decides whether it may go live. It requires an
+       * ACTIVE service (`useEnsureService` guarantees one) and a payout wallet
+       * (adopted from the session when the provider record is made, ADR-025),
+       * and answers 409 otherwise. That rejection is reported, never presumed.
+       */
       if (saved && mode === 'create') {
+        const failed = await publishQuietly(saved.id)
         setConfirming(false)
-        navigate(`/provider/passes/${saved.id}/edit`, { replace: true })
+        if (!failed) {
+          navigate(`/pass/${saved.id}`, { replace: true })
+          return
+        }
+        // The Pass exists; only the listing did not happen. Staying on the
+        // create form is the one place it must not land — pressing Create
+        // again would write a second Pass — so it opens the Pass's own screen,
+        // which has Publish on it, carrying what the backend said.
+        navigate(`/provider/passes/${saved.id}/edit`, {
+          replace: true,
+          state: { publishError: failed },
+        })
       }
     } finally {
       writing.current = false
+    }
+  }
+
+  /**
+   * Publishes the pass that was just created, and returns what went wrong
+   * rather than throwing: the Pass exists either way, and the caller has to
+   * navigate somewhere that reflects that.
+   */
+  async function publishQuietly(id: string): Promise<string | null> {
+    try {
+      await publish.mutateAsync(id)
+      return null
+    } catch (error) {
+      return messageForApiError(error)
     }
   }
 
@@ -565,7 +625,12 @@ function PassFields({
                 that rejection; it never pre-judges it.
               */}
               {mode === 'edit' && status !== 'ACTIVE' ? (
-                <PublishBlock publish={publish} passId={passId as string} status={status} />
+                <PublishBlock
+                  publish={publish}
+                  passId={passId as string}
+                  status={status}
+                  notice={publishNotice}
+                />
               ) : null}
 
               {/*
@@ -610,7 +675,7 @@ function PassFields({
               <div className="hidden flex-wrap items-center justify-between gap-x-4 gap-y-2 px-1 lg:flex">
                 <p className="text-small text-ink-subtle">
                   {mode === 'create'
-                    ? "You'll see the finished Pass before anything is created."
+                    ? "You'll see the finished Pass before it goes on sale."
                     : 'Passes people already bought keep the terms they paid for.'}
                 </p>
                 <Button asChild type="button" variant="ghost" size="sm">
@@ -954,10 +1019,18 @@ function PublishBlock({
   publish,
   passId,
   status,
+  notice,
 }: {
   publish: ReturnType<typeof usePublishPass>
   passId: string
   status: PassStatus
+  /**
+   * Why this screen is being looked at, when a create got as far as making the
+   * Pass and the publish was refused. It is the backend's own words, handed
+   * over by the navigation, and it stands only until this screen's own Publish
+   * has something to say.
+   */
+  notice?: string | null
 }) {
   // A Pass that was taken off the listing is not being published for the first
   // time, and saying "Ready to sell this?" to someone who already sold it reads
@@ -986,6 +1059,10 @@ function PublishBlock({
       {publish.isError ? (
         <Alert tone="danger" icon={<AlertCircle />} title="Couldn't publish this yet">
           {messageForApiError(publish.error)}
+        </Alert>
+      ) : notice && !publish.isSuccess ? (
+        <Alert tone="danger" icon={<AlertCircle />} title="Created, but not on sale yet">
+          {notice}
         </Alert>
       ) : null}
 

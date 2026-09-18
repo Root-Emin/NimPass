@@ -2,7 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { aPass, aProvider, aPublicPass, aService, mockApi, ok } from '@/test/mock-api'
+import { aPass, aProvider, aPublicPass, aService, domainError, mockApi, ok } from '@/test/mock-api'
 import { aPurchasedPass, aPurchasedPassPage } from '@/test/fixtures'
 import { renderApp, stubSession, stubWallet } from '@/test/render'
 
@@ -205,12 +205,48 @@ describe('Confirming a new Pass', () => {
     expect(calls.some((call) => call.method === 'POST')).toBe(false)
   })
 
-  it('creates the Pass on confirmation and opens it', async () => {
+  it('creates the Pass, puts it on sale and opens its public page', async () => {
+    // One press. The Pass is created, published and the provider lands on the
+    // link customers use — there is no draft waiting behind a second button.
+    const created = 'ffffffff-0000-4000-8000-000000000001'
+    const { calls } = mockApi({
+      ...ROUTES,
+      [`POST /api/v1/providers/${PROVIDER_ID}/services/${SERVICE_ID}/passes`]: () =>
+        ok(aPass({ id: created, status: 'DRAFT' }), 201),
+      [`POST /api/v1/catalog/passes/${created}/publish`]: () =>
+        ok(aPass({ id: created, status: 'ACTIVE' })),
+      [`/api/v1/public/passes/${created}`]: () =>
+        ok(aPublicPass({ pass: aPass({ id: created, status: 'ACTIVE' }) })),
+    })
+
+    const user = userEvent.setup()
+    const { router } = renderApp('/provider/passes/new', { wallet: WALLET, session: SESSION })
+
+    await fillForm(user)
+    await user.click(screen.getByRole('button', { name: 'Create Pass' }))
+    const dialog = await screen.findByRole('alertdialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Create Pass' }))
+
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/pass/${created}`))
+    expect(
+      calls.some(
+        (call) =>
+          call.method === 'POST' && call.url === `/api/v1/catalog/passes/${created}/publish`,
+      ),
+    ).toBe(true)
+  })
+
+  it('keeps the created Pass and explains it when publishing is refused', async () => {
+    // The write succeeded and the listing did not. The create form is the one
+    // screen this must not stay on — pressing Create again would write a
+    // second Pass — so it opens the Pass that exists, with the reason.
     const created = 'ffffffff-0000-4000-8000-000000000001'
     mockApi({
       ...ROUTES,
       [`POST /api/v1/providers/${PROVIDER_ID}/services/${SERVICE_ID}/passes`]: () =>
         ok(aPass({ id: created, status: 'DRAFT' }), 201),
+      [`POST /api/v1/catalog/passes/${created}/publish`]: () =>
+        domainError(409, 'PASS_NOT_PUBLISHABLE', 'This pass cannot be published yet.'),
       [`/api/v1/catalog/passes/${created}`]: () => ok(aPass({ id: created, status: 'DRAFT' })),
     })
 
@@ -225,6 +261,9 @@ describe('Confirming a new Pass', () => {
     await waitFor(() =>
       expect(router.state.location.pathname).toBe(`/provider/passes/${created}/edit`),
     )
+    expect(await screen.findByText('Created, but not on sale yet')).toBeInTheDocument()
+    // And the action that finishes the job is right there.
+    expect(await screen.findByRole('button', { name: /Publish Pass/i })).toBeInTheDocument()
   })
 
   it('writes one Pass however often the button is pressed', async () => {

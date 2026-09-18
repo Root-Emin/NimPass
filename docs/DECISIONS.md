@@ -2326,3 +2326,60 @@ Mainnet's batch is 60 blocks at roughly one second each, so under
 `NIMIQ_CONFIRMATION_POLICY=finality` a customer waits nought to sixty seconds
 on a payment that is already on chain. The product's default remains
 `inclusion` (ADR-021).
+
+---
+
+## ADR-029 — Creating a Pass publishes it, and lands on its public page
+
+**Date:** 2026-09-19
+**Status:** Accepted by the user's explicit instruction ("create pass formunu
+tamamladığım zaman … publish butonuna tıklamadan direkt oluşsun ve yayına
+alınsın … pass oluşunca direkt o pass'ın linkine yönlendirilmek istiyorum").
+**Completes:** ADR-008 and ADR-020, which removed the workspace and then the
+setup screen in front of the form. This removes the step left behind them.
+**Supersedes:** ADR-008's `Create Pass -> form -> Preview/Edit -> Publish`, and
+`02-USER-FLOWS.md §78-§79` as a two-press sequence — the preview and the
+publication still happen, in one press.
+**Affects:** `frontend/web/src/pages/provider/pass-form.tsx`,
+`frontend/web/src/components/catalog/pass-confirm-dialog.tsx`
+
+### Problem
+
+A created Pass landed in `DRAFT` on its own edit screen, where a second,
+separately-discovered button published it. A provider fills this form in to
+sell something; nobody comes to Nimpass to make a draft. The Pass they had
+just made was invisible in Discover until they found a control they had no
+reason to expect, and the screen they landed on was the form again rather than
+the thing they had made.
+
+### Decision
+
+Confirming the creation dialog creates the Pass **and** publishes it, then
+opens the Pass's public page (`/pass/{id}`) — the link a customer sees and the
+link a provider shares.
+
+Three things stay exactly as they were:
+
+1. **The confirmation dialog.** Creating is still not reversible from the UI,
+   so the last look before anything is written stays. Its copy now says what
+   confirming does: the Pass goes into Discover straight away.
+2. **`POST /catalog/passes/{id}/publish` decides.** Nothing is presumed
+   publishable. The backend still requires an ACTIVE service — which
+   `useEnsureService` has guaranteed since ADR-008 — and a payout wallet, which
+   ADR-025 adopts from the session when the provider record is made.
+3. **Publish and unpublish on the edit screen.** A Pass taken off the listing
+   is published again from there; the button did not exist only for first
+   publications.
+
+**A refused publish lands on the Pass, not on the form.** The write succeeded
+and only the listing did not, so the create form is the one screen it must not
+stay on — pressing Create there again would write a second Pass. It opens
+`/provider/passes/{id}/edit`, which has Publish on it, carrying the backend's
+own words as the reason it is being looked at.
+
+### Consequences
+
+A Pass can no longer be made *without* being offered for sale in one pass
+through the form. Nothing was removed to achieve that: unpublish is one press
+away on the screen the provider lands on next, and the Pass keeps its id, its
+URL and its history across both directions (ADR-023).
